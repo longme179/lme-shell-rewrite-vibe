@@ -220,8 +220,10 @@ pub fn reference_tree_available() -> bool {
 macro_rules! require_legacy_reference {
     () => {
         if !common::reference_tree_available() {
-            eprintln!("SKIP: legacy reference tree not present in this export \
-                      (parity vs the Python backend runs in the full repo)");
+            eprintln!(
+                "SKIP: legacy reference tree not present in this export \
+                      (parity vs the Python backend runs in the full repo)"
+            );
             return;
         }
     };
