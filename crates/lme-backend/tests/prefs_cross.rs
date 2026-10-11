@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{python3, repo_root};
+use common::{python3, python_tree};
 use lme_backend::prefs::{default_preferences, Preferences};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ preferences = Preferences(Path({path:?}))
 {code}
 print(json.dumps(preferences.values, ensure_ascii=False))
 "#,
-        scripts = repo_root().join("scripts").display().to_string(),
+        scripts = python_tree().join("scripts").display().to_string(),
         path = path.display().to_string(),
     );
     let output = std::process::Command::new(python)

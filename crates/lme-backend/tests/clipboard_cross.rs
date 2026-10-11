@@ -24,7 +24,7 @@ fn directory(name: &str) -> PathBuf {
 fn python_capture(dir: &Path, kind: &str, payload: &[u8]) {
     let python = python3().expect("python3 available");
     let mut child = Command::new(python)
-        .arg(repo_root().join("scripts/clipboard.py"))
+        .arg(common::python_tree().join("scripts/clipboard.py"))
         .args(["--capture", kind, "--directory"])
         .arg(dir)
         .stdin(Stdio::piped())
@@ -40,7 +40,7 @@ fn python_capture(dir: &Path, kind: &str, payload: &[u8]) {
 fn python_daemon_lines(dir: &Path, requests: &[String]) -> Vec<Value> {
     let python = python3().expect("python3 available");
     let mut child = Command::new(python)
-        .arg(repo_root().join("scripts/clipboard.py"))
+        .arg(common::python_tree().join("scripts/clipboard.py"))
         .arg("--directory")
         .arg(dir)
         .stdin(Stdio::piped())

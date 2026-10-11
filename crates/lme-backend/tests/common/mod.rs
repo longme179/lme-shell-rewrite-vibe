@@ -14,8 +14,10 @@ pub struct Fixture {
 }
 
 pub fn repo_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR = lme-backend/
+    // CARGO_MANIFEST_DIR = crates/lme-backend/ (repo root is two levels up)
     Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
         .parent()
         .unwrap()
         .to_path_buf()
@@ -87,7 +89,7 @@ impl Fixture {
 
     pub fn env(&self) -> std::collections::HashMap<String, String> {
         let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
-        let stubs = repo_root().join("bench/stubs");
+        let stubs = repo_root().join("legacy/bench/stubs");
         env.insert(
             "PATH".to_string(),
             format!(
@@ -203,4 +205,40 @@ pub fn normalize(snapshot: &mut serde_json::Value, root: &Path) {
         }
     }
     walk(snapshot, &prefix);
+}
+
+/// Stage a runnable copy of the legacy Python backend with the original tree
+/// layout (scripts/ + config/ at the root): `desktop_features.py` resolves
+/// `config/theme-tokens.json` relative to its parent-of-parent directory,
+/// which is `legacy/` in the repo (config lives at the repo root).
+/// Idempotent per process; copies (not symlinks) because the Python
+/// resolves its own path.
+pub fn python_tree() -> PathBuf {
+    use std::sync::OnceLock;
+    static TREE: OnceLock<PathBuf> = OnceLock::new();
+    TREE.get_or_init(|| {
+        let tree = std::env::temp_dir().join(format!("lme-python-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tree);
+        std::fs::create_dir_all(tree.join("scripts")).expect("stage scripts dir");
+        for entry in std::fs::read_dir(repo_root().join("legacy/scripts")).expect("legacy scripts")
+        {
+            let entry = entry.expect("entry");
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let dst = tree.join("scripts").join(entry.file_name());
+                std::fs::copy(entry.path(), &dst).expect("stage script file");
+            }
+        }
+        let config_src = repo_root().join("config");
+        let config_dst = tree.join("config");
+        std::fs::create_dir_all(&config_dst).expect("stage config dir");
+        for entry in std::fs::read_dir(&config_src).expect("repo config") {
+            let entry = entry.expect("entry");
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let dst = config_dst.join(entry.file_name());
+                std::fs::copy(entry.path(), &dst).expect("stage config file");
+            }
+        }
+        tree
+    })
+    .clone()
 }

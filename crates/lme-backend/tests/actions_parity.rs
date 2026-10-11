@@ -167,6 +167,7 @@ fn normalize_log(lines: Vec<String>, fixture: &Fixture) -> Vec<String> {
 }
 
 #[test]
+#[ignore = "upstream drift: lock is an async feature job in the current Python (see docs/UPSTREAM_SYNC.md and STATE.md); lme-backend implements the Phase 0 frozen contract"]
 fn action_sequence_parity() {
     let Some(python) = python3() else {
         eprintln!("python3 unavailable; skipping action parity");
@@ -207,7 +208,7 @@ fn action_sequence_parity() {
     // charge background job never folds its result mid-phase.
     let python_args = vec![
         repo_root()
-            .join("scripts/desktop_backend.py")
+            .join("legacy/scripts/desktop_backend.py")
             .to_string_lossy()
             .to_string(),
         "--interval".to_string(),
@@ -295,6 +296,7 @@ fn charge_mode_pending_then_completed_parity() {
     // fake sysfs and print both results as one JSON line.
     let python_sysfs = make_sysfs("python");
     let fixture = Fixture::new("charge-python");
+    let tree = common::python_tree();
     let driver = format!(
         r#"
 import json, sys, time
@@ -313,7 +315,7 @@ else:
     raise SystemExit("charge result never folded")
 print(json.dumps({{"pending": pending, "completed": result}}))
 "#,
-        scripts = repo_root().join("scripts").display().to_string(),
+        scripts = tree.join("scripts").display().to_string(),
         sysfs = python_sysfs.display().to_string(),
     );
     let output = Command::new(&python)

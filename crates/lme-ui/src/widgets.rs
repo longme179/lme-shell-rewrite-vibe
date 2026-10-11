@@ -120,6 +120,40 @@ pub trait Widget {
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 }
 
+/// Forwarding impl so `push(Box<dyn Widget>)` and `push(concrete)` both work.
+impl Widget for Box<dyn Widget> {
+    fn measure(&mut self, ctx: &mut Ctx) -> Size {
+        (**self).measure(ctx)
+    }
+    fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
+        (**self).layout(ctx, bounds)
+    }
+    fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<DrawCmd>) {
+        (**self).paint(ctx, out)
+    }
+    fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        (**self).deliver(ctx, ev, target)
+    }
+    fn rect(&self) -> Rect {
+        (**self).rect()
+    }
+    fn focusable(&self) -> bool {
+        (**self).focusable()
+    }
+    fn focusables(&self, out: &mut Vec<u64>) {
+        (**self).focusables(out)
+    }
+    fn id(&self) -> u64 {
+        (**self).id()
+    }
+    fn grow(&self) -> f32 {
+        (**self).grow()
+    }
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        (**self).as_any()
+    }
+}
+
 pub mod font_weight {
     pub const NORMAL: u16 = 400;
     pub const MEDIUM: u16 = 500;
@@ -164,8 +198,8 @@ impl HBox {
         self.padding = Insets::all(pad);
         self
     }
-    pub fn push(mut self, child: Box<dyn Widget>) -> Self {
-        self.children.push(child);
+    pub fn push(mut self, child: impl Widget + 'static) -> Self {
+        self.children.push(Box::new(child));
         self
     }
 }
@@ -294,8 +328,8 @@ impl VBox {
         self.padding = Insets::all(pad);
         self
     }
-    pub fn push(mut self, child: Box<dyn Widget>) -> Self {
-        self.children.push(child);
+    pub fn push(mut self, child: impl Widget + 'static) -> Self {
+        self.children.push(Box::new(child));
         self
     }
 }
@@ -1494,8 +1528,8 @@ mod tests {
     fn hbox_layout_and_hit_test() {
         let mut parts = test_ctx();
         let mut row = HBox::new(8.0);
-        row = row.push(Box::new(Button::new(1, "One")));
-        row = row.push(Box::new(Button::new(2, "Two")));
+        row = row.push(Button::new(1, "One"));
+        row = row.push(Button::new(2, "Two"));
         let m = with_ctx(&mut parts, |mut c| row.measure(&mut c));
         assert!(m.w > 40.0);
         with_ctx(&mut parts, |mut c| {
@@ -1592,8 +1626,8 @@ mod tests {
         let mut scope = FocusScope::new(
             Box::new(
                 HBox::new(6.0)
-                    .push(Box::new(Button::new(11, "A")))
-                    .push(Box::new(Button::new(22, "B"))),
+                    .push(Button::new(11, "A"))
+                    .push(Button::new(22, "B")),
             ),
             true,
         );

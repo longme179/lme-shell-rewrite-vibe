@@ -33,7 +33,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rustix = { version = "1", features = ["fs", "process"] }
 inotify = "0.11"
 # --- D-Bus (notifications, tray, logind) ---
-zbus = { version = "5", default-features = false, features = ["blocking-api"] }
+zbus = "5"
 # --- internal ---
 lme-backend = { path = "crates/lme-backend" }
 lme-ui = { path = "crates/lme-ui" }

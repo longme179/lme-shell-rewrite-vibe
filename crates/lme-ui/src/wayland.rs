@@ -19,6 +19,7 @@ use crate::text::FontBook;
 use crate::theme::Theme;
 use crate::widgets::{Ctx, InputEvent, KeyInput, UiEvent, Widget};
 use calloop::ping::Ping;
+// Re-exported for crates building windows (WindowSpec fields).
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
 use smithay_client_toolkit::delegate_registry;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -29,9 +30,9 @@ use smithay_client_toolkit::seat::keyboard::{
 };
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use smithay_client_toolkit::shell::wlr_layer::{
-    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-    LayerSurfaceConfigure,
+    LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::slot::SlotPool;
@@ -122,6 +123,9 @@ pub trait AppHandler {
     fn tick(&mut self, state: &mut UiState);
     /// The daemon's theme, exposed to the render pass.
     fn theme(&self) -> &Theme;
+    /// Downcast support so the daemon can recover its concrete Shell from
+    /// the handler box during with_shell calls.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Placeholder installed while the real handler is re-entrantly invoked
@@ -140,6 +144,9 @@ impl AppHandler for NoopShell {
     fn tick(&mut self, _s: &mut UiState) {}
     fn theme(&self) -> &Theme {
         &self.theme
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -192,6 +199,9 @@ pub struct UiState {
     render_queue: Vec<u64>,
     ping: Option<Ping>,
     cursor_pool: Option<SlotPool>,
+    /// The daemon's loop handle (set by the daemon main) — lets shell code
+    /// schedule one-shot timers (OSD expiry) from inside callbacks.
+    pub handle: Option<calloop::LoopHandle<'static, UiState>>,
     pub exit: bool,
 }
 
@@ -237,6 +247,7 @@ impl UiState {
             render_queue: Vec::new(),
             ping: None,
             cursor_pool: None,
+            handle: None,
             exit: false,
         })
     }

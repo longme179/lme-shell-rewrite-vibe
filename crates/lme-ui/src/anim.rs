@@ -146,6 +146,11 @@ impl Animator {
         self.tweens.values().any(|t| !t.done)
     }
 
+    /// True when the track is absent or completed.
+    pub fn finished(&self, id: u64) -> bool {
+        self.tweens.get(&id).map(|t| t.done).unwrap_or(true)
+    }
+
     /// Drop tracks whose tweens finished and hold values nobody needs.
     pub fn gc(&mut self) {
         self.tweens

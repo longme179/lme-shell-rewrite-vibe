@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{python3, repo_root};
+use common::{python3, python_tree};
 use lme_backend::weather::{Fetch, WeatherClient};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -139,7 +139,7 @@ settle()
 steps.append(client.snapshot(prefs, allow_fetch=True))  # t=1200 search results
 print(json.dumps(steps, ensure_ascii=False))
 "#,
-        scripts = repo_root().join("scripts").display().to_string(),
+        scripts = common::python_tree().join("scripts").display().to_string(),
         forecast = FORECAST_BODY,
         geo = GEO_BODY,
         search = SEARCH_BODY,

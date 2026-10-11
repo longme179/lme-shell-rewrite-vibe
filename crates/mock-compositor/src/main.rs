@@ -34,7 +34,7 @@ use wayland_server::{
 use zwlr_layer_shell_v1::ZwlrLayerShellV1 as LayerShellIface;
 use zwlr_layer_surface_v1::ZwlrLayerSurfaceV1 as LayerSurfaceIface;
 
-const KEYMAP: &str = include_str!("../../assets/minimal-keymap.xkb");
+const KEYMAP: &str = include_str!("../assets/minimal-keymap.xkb");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
