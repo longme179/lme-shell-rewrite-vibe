@@ -55,6 +55,7 @@ impl Drop for Daemon {
 
 #[test]
 fn loop_acknowledges_every_input_line() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("loop-ack");
     let mut daemon = Daemon::start(&fixture, "60");
     let first = daemon
@@ -101,6 +102,7 @@ fn loop_acknowledges_every_input_line() {
 
 #[test]
 fn loop_rejects_oversized_input() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("loop-oversize");
     let mut daemon = Daemon::start(&fixture, "60");
     let _ = daemon.read_line(Duration::from_secs(15));
@@ -122,6 +124,7 @@ fn loop_rejects_oversized_input() {
 
 #[test]
 fn loop_polls_on_interval_and_exits_cleanly() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("loop-poll");
     let mut daemon = Daemon::start(&fixture, "0.5");
     let _ = daemon.read_line(Duration::from_secs(15));

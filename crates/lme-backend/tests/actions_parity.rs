@@ -273,6 +273,7 @@ fn action_sequence_parity() {
 
 #[test]
 fn charge_mode_pending_then_completed_parity() {
+    crate::require_legacy_reference!();
     let Some(python) = python3() else {
         eprintln!("python3 unavailable; skipping charge parity");
         return;

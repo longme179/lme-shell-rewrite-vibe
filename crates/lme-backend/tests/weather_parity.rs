@@ -71,6 +71,7 @@ fn settle() {
 
 #[test]
 fn weather_state_machine_matches_python() {
+    crate::require_legacy_reference!();
     let Some(python) = python3() else {
         eprintln!("python3 unavailable; skipping live weather parity");
         return;

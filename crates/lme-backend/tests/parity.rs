@@ -92,6 +92,7 @@ fn once_settings_mode_matches_python() {
 
 #[test]
 fn interval_validation_matches_python() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("interval");
     let run = |program: &str, args: &[&str]| {
         std::process::Command::new(program)

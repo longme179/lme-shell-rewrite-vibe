@@ -46,6 +46,7 @@ print(json.dumps(preferences.values, ensure_ascii=False))
 
 #[test]
 fn rust_reads_python_writes() {
+    crate::require_legacy_reference!();
     let root = script("read");
     let _ = std::fs::remove_dir_all(&root);
     let path = root.join("settings.json");
@@ -67,6 +68,7 @@ fn rust_reads_python_writes() {
 
 #[test]
 fn python_reads_rust_writes() {
+    crate::require_legacy_reference!();
     let root = script("write");
     let _ = std::fs::remove_dir_all(&root);
     let path = root.join("settings.json");
@@ -96,6 +98,7 @@ fn python_reads_rust_writes() {
 
 #[test]
 fn concurrent_writers_do_not_lose_updates() {
+    crate::require_legacy_reference!();
     let root = script("stress");
     let _ = std::fs::remove_dir_all(&root);
     let path = root.join("settings.json");

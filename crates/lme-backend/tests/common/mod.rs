@@ -207,6 +207,26 @@ pub fn normalize(snapshot: &mut serde_json::Value, root: &Path) {
     walk(snapshot, &prefix);
 }
 
+/// True when the legacy reference tree (python backend + bench stubs) is
+/// present. Release exports intentionally omit `legacy/`; parity tests that
+/// compare against the legacy implementation skip cleanly there.
+pub fn reference_tree_available() -> bool {
+    repo_root().join("legacy").is_dir()
+}
+
+/// Skip guard for legacy-referencing tests. Returns true when the test
+/// should run; prints the skip reason otherwise.
+#[macro_export]
+macro_rules! require_legacy_reference {
+    () => {
+        if !common::reference_tree_available() {
+            eprintln!("SKIP: legacy reference tree not present in this export \
+                      (parity vs the Python backend runs in the full repo)");
+            return;
+        }
+    };
+}
+
 /// Stage a runnable copy of the legacy Python backend with the original tree
 /// layout (scripts/ + config/ at the root): `desktop_features.py` resolves
 /// `config/theme-tokens.json` relative to its parent-of-parent directory,

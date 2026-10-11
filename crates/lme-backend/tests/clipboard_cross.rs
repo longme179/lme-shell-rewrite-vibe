@@ -103,6 +103,7 @@ fn first_state(lines: &[Value]) -> &Value {
 
 #[test]
 fn python_capture_is_readable_by_rust() {
+    crate::require_legacy_reference!();
     let dir = directory("py2rs");
     python_capture(&dir, "text", b"captured by python");
     let history = History::new(&dir, 100, lme_backend::clipboard::MAX_TOTAL).unwrap();
@@ -116,6 +117,7 @@ fn python_capture_is_readable_by_rust() {
 
 #[test]
 fn rust_store_is_readable_by_python() {
+    crate::require_legacy_reference!();
     let dir = directory("rs2py");
     let mut history = History::new(&dir, 100, lme_backend::clipboard::MAX_TOTAL).unwrap();
     history.store("text", b"stored by rust").unwrap().unwrap();
@@ -142,6 +144,7 @@ fn rust_store_is_readable_by_python() {
 
 #[test]
 fn daemon_protocol_parity() {
+    crate::require_legacy_reference!();
     let requests: Vec<String> = vec![
         json!({"action": "search", "query": "clip", "kind": "all"}).to_string(),
         json!({"action": "search", "query": "clip", "kind": "text"}).to_string(),
