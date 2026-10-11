@@ -7,7 +7,10 @@ operative spec; earlier Phase 2 documents remain as history.
 
 ## Current step
 
-**Interim delivery TIER-1 complete.** Tier 0 done (0.9 fractional-scale
+**Interim delivery TIER-1 SENT** (lme-shell-src-TIER-1-20261011.zip + README +
+summary message via scripts/deliver.sh; commit 6169ddc; export replayed clean:
+release build + debug build + full test suite green in the pruned export;
+secret scan fail-closed clean). Tier 0 done (0.9 fractional-scale
 excepted); Tier 1: 1.1–1.8, 1.10, 1.12, 1.13 done, 1.2 partial (media/
 resources/activity modules have no feed), 1.9 notifications daemon and 1.11
 tray missing. Tiers 2/3 not started (backend-frozen parts only). Tier 4 docs
@@ -67,6 +70,16 @@ made (mock pacing insufficient) — flagged real-machine.
   <label>` runs gates + export + replay + scan + zip + send.
 - Golden regen: `LME_GOLDEN_REGEN=1 cargo test -p lme-shell --test golden`.
 - Bench: `scripts/bench-native.sh` (uses the RELEASE binaries).
+
+## Delivery record
+
+- Label TIER-1, commit 6169ddc, 2026-10-11. Zip 1 part (well under the 7 MB
+  split threshold). NATIVE_PLAN counts at delivery: done=34 partial=1
+  missing=17 external=2.
+- Export excludes legacy/, docs/previews/, assets/wallpapers/ (EXPORT_NOTES
+  inside the zip says so); docs/screens/ kept (3 PNGs).
+- Backend parity tests that need the legacy reference tree skip cleanly in
+  the export (require_legacy_reference!) — they run fully in the repo.
 
 ## Next actions (for the next session, in priority order)
 
