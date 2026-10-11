@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{python3, repo_root};
+use common::python3;
 use lme_backend::clipboard::History;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};

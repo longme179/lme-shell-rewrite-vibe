@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{python3, python_tree};
+use common::python3;
 use lme_backend::weather::{Fetch, WeatherClient};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
