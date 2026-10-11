@@ -94,8 +94,10 @@ Rust backend as the frozen-contract implementation until then.
 
 ## In progress
 
-Nothing uncommitted. Next: baseline replication report (Phase 0→2.0 +
-C + U) — built, replayed in a clean dir, sent via send-file.sh.
+Nothing. The baseline replication report (Phase 0→2.0 + C + U) is BUILT,
+REPLAYED clean (log in the zip), and SENT via send-file.sh
+(lme-phase2-U-report.zip, 1 part, 752 KB; SUMMARY first-1800 posted to
+Discord). Staging kept at /home/z/work/lme-reports/phase2-U/.
 
 ## Next actions
 
