@@ -62,6 +62,10 @@ REPLAY_TARGET="$(mktemp -d /tmp/lme-replay-target.XXXXXX)"
   CARGO_TARGET_DIR="$REPLAY_TARGET" CARGO_INCREMENTAL=0 \
     PKG_CONFIG_PATH="$PKG_CONFIG_PATH" RUSTFLAGS="$RUSTFLAGS" \
     cargo build --release --locked || exit 1
+  # debug bins too: the e2e golden tests spawn workspace binaries
+  CARGO_TARGET_DIR="$REPLAY_TARGET" CARGO_INCREMENTAL=0 \
+    PKG_CONFIG_PATH="$PKG_CONFIG_PATH" RUSTFLAGS="$RUSTFLAGS" \
+    cargo build --workspace --locked || exit 1
   CARGO_TARGET_DIR="$REPLAY_TARGET" CARGO_INCREMENTAL=0 \
     PKG_CONFIG_PATH="$PKG_CONFIG_PATH" RUSTFLAGS="$RUSTFLAGS" \
     cargo test --locked || exit 1
