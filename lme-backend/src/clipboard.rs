@@ -6,7 +6,7 @@
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead as _, Write};
+use std::io::{Read as _, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -691,7 +691,10 @@ fn stop_child(child: &mut std::process::Child) {
 }
 
 enum Input {
-    Line(String),
+    /// All complete lines from one read chunk, mirroring the Python loop:
+    /// they are processed before the next state emission, so a burst of
+    /// requests acks as one updated state, not one per line.
+    Batch(Vec<String>),
     Eof,
 }
 
@@ -727,16 +730,29 @@ pub fn serve(directory: &Path) -> std::process::ExitCode {
         .spawn(move || {
             let stdin = std::io::stdin();
             let mut handle = stdin.lock();
-            let mut line = String::new();
+            let mut buffer: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 8192];
             loop {
-                line.clear();
-                match handle.read_line(&mut line) {
+                match handle.read(&mut chunk) {
                     Ok(0) | Err(_) => {
                         let _ = sender.send(Input::Eof);
                         return;
                     }
-                    Ok(_) => {
-                        let _ = sender.send(Input::Line(line.trim_end_matches('\n').to_string()));
+                    Ok(count) => {
+                        buffer.extend_from_slice(&chunk[..count]);
+                        if buffer.len() > 65536 {
+                            buffer.clear();
+                            continue;
+                        }
+                        let mut lines = Vec::new();
+                        while let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
+                            let mut line: Vec<u8> = buffer.drain(..=position).collect();
+                            line.pop();
+                            lines.push(String::from_utf8_lossy(&line).into_owned());
+                        }
+                        if !lines.is_empty() && sender.send(Input::Batch(lines)).is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -789,126 +805,141 @@ pub fn serve(directory: &Path) -> std::process::ExitCode {
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) | Ok(Input::Eof) => break,
-            Ok(Input::Line(line)) => {
-                let mut action = String::new();
-                let mut ok = true;
-                let mut message = String::new();
-                let request: Value = match serde_json::from_str(&line) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        action = String::new();
-                        ok = false;
-                        message = "Invalid JSON input".to_string();
-                        Value::Null
-                    }
-                };
-                if !request.is_null() {
-                    action = request
-                        .get("action")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let outcome: Result<(), String> = (|| match action.as_str() {
-                        "search" => {
-                            let request_query = request.get("query").and_then(Value::as_str);
-                            let request_kind = request.get("kind").and_then(Value::as_str);
-                            let (Some(request_query), Some(request_kind)) =
-                                (request_query, request_kind)
-                            else {
-                                return Err("Invalid search".to_string());
-                            };
-                            if !matches!(request_kind, "all" | "text" | "image") {
-                                return Err("Invalid search".to_string());
-                            }
-                            query = request_query.chars().take(300).collect();
-                            kind = request_kind.to_string();
-                            Ok(())
-                        }
-                        "copy" => {
-                            let (_id, mime, data) =
-                                history.item(request.get("id").unwrap_or(&Value::Null))?;
-                            let Some(wl_copy) = crate::pyutil::which("wl-copy") else {
-                                return Err("Install wl-clipboard to copy items".to_string());
-                            };
-                            let mut child = Command::new(wl_copy)
-                                    .args(["--type", &mime])
-                                    .stdin(Stdio::piped())
-                                    .stdout(Stdio::null())
-                                    .stderr(Stdio::null())
-                                    .spawn()
-                                    .map_err(|_| {
-                                        "Clipboard operation failed. Check the Wayland session and local storage.".to_string()
-                                    })?;
-                            if let Some(stdin) = child.stdin.as_mut() {
-                                let _ = stdin.write_all(&data);
-                            }
-                            drop(child.stdin.take());
-                            match wait_with_timeout(&mut child, Duration::from_secs(4)) {
-                                Some(status) if status.success() => {}
-                                _ => {
-                                    let _ = child.kill();
-                                    let _ = child.wait();
-                                    return Err("Clipboard operation failed. Check the Wayland session and local storage.".to_string());
-                                }
-                            }
-                            message = "Copied to clipboard".to_string();
-                            Ok(())
-                        }
-                        "pin" => history.pin(request.get("id").unwrap_or(&Value::Null)),
-                        "delete" => history.delete(request.get("id").unwrap_or(&Value::Null)),
-                        "clear" => {
-                            let include_pinned = request
-                                .get("includePinned")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false);
-                            history.clear(include_pinned)
-                        }
-                        "pause" => {
-                            let value = request.get("value").and_then(Value::as_bool);
-                            let Some(value) = value else {
-                                return Err("Pause must be true or false".to_string());
-                            };
-                            history.pause(value)?;
-                            capture.last_retry = None;
-                            capture.update(&mut history, &clipboard_preferences());
-                            Ok(())
-                        }
-                        _ => Err("Unknown clipboard action".to_string()),
-                    })();
-                    match outcome {
-                        Ok(()) => {}
-                        Err(error) => {
-                            ok = false;
-                            message = if matches!(
-                                action.as_str(),
-                                "search" | "copy" | "pin" | "delete" | "clear" | "pause"
-                            ) && is_value_error(&error)
-                            {
-                                error.chars().take(180).collect()
-                            } else {
-                                "Clipboard operation failed. Check the Wayland session and local storage.".to_string()
-                            };
-                            if action == "search" {
-                                query = String::new();
-                                kind = "all".to_string();
-                            }
-                        }
-                    }
+            Ok(Input::Batch(lines)) => {
+                for line in lines {
+                    let (action, ok, message) =
+                        process_line(&mut history, &mut capture, &mut query, &mut kind, &line);
+                    sequence += 1;
+                    last_result = Some(
+                        json!({
+                            "action": action, "ok": ok, "message": message, "sequence": sequence,
+                        })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                    );
                 }
-                sequence += 1;
-                last_result = Some(
-                    json!({
-                        "action": action, "ok": ok, "message": message, "sequence": sequence,
-                    })
-                    .as_object()
-                    .cloned()
-                    .unwrap(),
-                );
             }
         }
     }
     capture.stop();
     std::process::ExitCode::SUCCESS
+}
+
+/// One clipboard request line: the inner `while b"\n" in buffer` dispatch of
+/// the Python loop, verbatim. Returns (action, ok, message) and updates the
+/// live query/kind filters.
+fn process_line(
+    history: &mut History,
+    capture: &mut CaptureService,
+    query: &mut String,
+    kind: &mut String,
+    line: &str,
+) -> (String, bool, String) {
+    let mut action = String::new();
+    let mut ok = true;
+    let mut message = String::new();
+    let request: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(_) => {
+            return (String::new(), false, "Invalid JSON input".to_string());
+        }
+    };
+    if !request.is_null() {
+        action = request
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let outcome: Result<(), String> = (|| match action.as_str() {
+            "search" => {
+                let request_query = request.get("query").and_then(Value::as_str);
+                let request_kind = request.get("kind").and_then(Value::as_str);
+                let (Some(request_query), Some(request_kind)) = (request_query, request_kind)
+                else {
+                    return Err("Invalid search".to_string());
+                };
+                if !matches!(request_kind, "all" | "text" | "image") {
+                    return Err("Invalid search".to_string());
+                }
+                *query = request_query.chars().take(300).collect();
+                *kind = request_kind.to_string();
+                Ok(())
+            }
+            "copy" => {
+                let (_id, mime, data) = history.item(request.get("id").unwrap_or(&Value::Null))?;
+                let Some(wl_copy) = crate::pyutil::which("wl-copy") else {
+                    return Err("Install wl-clipboard to copy items".to_string());
+                };
+                let mut child = Command::new(wl_copy)
+                    .args(["--type", &mime])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|_| {
+                        "Clipboard operation failed. Check the Wayland session and local storage."
+                            .to_string()
+                    })?;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(&data);
+                }
+                drop(child.stdin.take());
+                match wait_with_timeout(&mut child, Duration::from_secs(4)) {
+                    Some(status) if status.success() => {}
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(
+                            "Clipboard operation failed. Check the Wayland session and local storage."
+                                .to_string(),
+                        );
+                    }
+                }
+                message = "Copied to clipboard".to_string();
+                Ok(())
+            }
+            "pin" => history.pin(request.get("id").unwrap_or(&Value::Null)),
+            "delete" => history.delete(request.get("id").unwrap_or(&Value::Null)),
+            "clear" => {
+                let include_pinned = request
+                    .get("includePinned")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                history.clear(include_pinned)
+            }
+            "pause" => {
+                let value = request.get("value").and_then(Value::as_bool);
+                let Some(value) = value else {
+                    return Err("Pause must be true or false".to_string());
+                };
+                history.pause(value)?;
+                capture.last_retry = None;
+                capture.update(history, &clipboard_preferences());
+                Ok(())
+            }
+            _ => Err("Unknown clipboard action".to_string()),
+        })();
+        match outcome {
+            Ok(()) => {}
+            Err(error) => {
+                ok = false;
+                // ValueError messages surface verbatim (truncated to 180
+                // chars); every other failure is generic.
+                message = if is_value_error(&error) {
+                    error.chars().take(180).collect()
+                } else {
+                    "Clipboard operation failed. Check the Wayland session and local storage."
+                        .to_string()
+                };
+                if action == "search" {
+                    *query = String::new();
+                    *kind = "all".to_string();
+                }
+            }
+        }
+    }
+    (action, ok, message)
 }
 
 /// Distinguish surfaced ValueError messages from generic failures, mirroring
