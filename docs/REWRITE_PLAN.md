@@ -55,6 +55,13 @@ a fresh python3 per clipboard event; niri queried by subprocess although
 
 ## Phase 1 — Rust backend daemon (`lme-backend` crate)
 
+**Status: complete on `rewrite/phase-1`** (58 tests green: 34 unit + 24
+integration; `cargo fmt`/`clippy -D warnings`/`cargo test` clean; Python suite
+clean; before/after numbers in `bench/RESULTS.md` §Phase 1). Milestones:
+M1 ✓ M2 ✓ M3 ✓ M4 ✓ M5 ✓ M6 ✓ M7 ✓. Remaining Phase 1 exit item: one
+real-machine session with `LME_SHELL_BACKEND=rust` (hardware access pending —
+listed in the exit criteria below and in `lme-backend/README.md`).
+
 One binary, three roles selected by flags (mirroring the Python layout):
 default = state daemon on stdio; `--clipboard` = clipboard daemon;
 `--capture <kind>` = one-shot clipboard capture (replaces the per-event

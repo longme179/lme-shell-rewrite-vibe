@@ -10,6 +10,9 @@ QtObject {
     // Development fixtures can simulate hardware while testing native services
     // on a private bus. The public demo/preview modes isolate both pathways.
     readonly property bool backendDemo: demo || Quickshell.env("LME_SHELL_BACKEND_DEMO") === "1"
+    // Phase 1 switch: LME_SHELL_BACKEND=rust selects the native daemon
+    // (build it with scripts/build-backend.sh). Default stays python.
+    readonly property bool rustBackend: Quickshell.env("LME_SHELL_BACKEND") === "rust"
     property var snapshot: ({apps: [], niri: {available: false, windows: [], workspaces: []}, system: {}, preferences: {language: "en", animations: true, opacity: 0.90, accent: "#9580ff"}})
     readonly property var apps: snapshot.apps || []
     readonly property var niri: snapshot.niri || {available: false, windows: [], workspaces: []}
@@ -160,7 +163,9 @@ QtObject {
         } catch (error) { console.warn("Invalid desktop backend message:", error); }
     }
     property Process backend: Process {
-        command: ["python3", "-u", Quickshell.shellPath("scripts/desktop_backend.py")]
+        command: (root.rustBackend
+                 ? [Quickshell.shellPath("lme-backend/target/release/lme-backend")]
+                 : ["python3", "-u", Quickshell.shellPath("scripts/desktop_backend.py")])
             .concat(root.backendDemo ? ["--demo"] : []).concat(root.settingsApp ? ["--settings"] : [])
         stdinEnabled: true
         running: true

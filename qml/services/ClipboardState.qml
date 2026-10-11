@@ -6,6 +6,9 @@ import Quickshell.Io
 
 QtObject {
     id: root
+    // Phase 1 switch: LME_SHELL_BACKEND=rust selects the native clipboard
+    // daemon (same history.sqlite3 state). Default stays python.
+    readonly property bool rustBackend: Quickshell.env("LME_SHELL_BACKEND") === "rust"
     property bool started: false
     property bool ready: ShellState.demo
     property int restartAttempts: 0
@@ -69,7 +72,9 @@ QtObject {
         } catch (_) { message = "Clipboard state could not be read."; messageError = true; }
     }
     property Process backend: Process {
-        command: ["python3", Quickshell.shellPath("scripts/clipboard.py")]
+        command: root.rustBackend
+            ? [Quickshell.shellPath("lme-backend/target/release/lme-backend"), "--clipboard"]
+            : ["python3", Quickshell.shellPath("scripts/clipboard.py")]
         running: root.started && !ShellState.demo && !ShellState.settingsApp
         stdinEnabled: true
         stdout: SplitParser { onRead: data => root.accept(data) }

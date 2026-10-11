@@ -80,3 +80,37 @@ thresholds, and polkit prompts cannot be exercised in this container. Those
 code paths are covered by golden-JSON parity tests with stub tools and fake
 sysfs trees, and every one of them is marked
 **needs real-machine validation** in the plan.
+
+---
+
+# Phase 1 results — Rust backend vs Python backend (same container, same day)
+
+Produced by `bench/measure.py --backend {python,rust}` (release build,
+`opt-level=z` + LTO). The Rust runs below use the **subprocess parity mode**
+(no `NIRI_SOCKET`), i.e. the worst case; inside a real niri session the socket
+path additionally removes the two `niri msg --json` state polls per cycle and
+the persistent event-stream child.
+
+| Measurement | Python | Rust | Delta |
+|---|---|---|---|
+| `--once` wall, no desktop tools on PATH | 0.100–0.103 s | 0.018 s | **5.5× faster** |
+| `--once` wall, all stub tools (max churn) | 0.128–0.129 s | 0.065 s | **2× faster** |
+| Snapshot line, no-tools / stub-tools fixtures | 4597 / 5181 B | 4596 / 5180 B | same shape |
+| Short-lived subprocesses per snapshot | 12 | 12 | identical list (parity) |
+| State-daemon steady-state RSS (11 s) | 29.5 MB | **6.0 MB** | −79% |
+| Clipboard-daemon steady-state RSS | 17.5 MB | **4.1 MB** | −77% |
+| Combined backend RSS | 47.0 MB | **10.1 MB** | −78% (target < 15 MB ✓) |
+| Per clipboard event | fresh python3 (~13.7 MB transient) | `lme-backend --capture` one-shot | no interpreter startup |
+
+Parity evidence for these numbers: 58 tests green (34 unit + 24 integration,
+including golden `--once` snapshots in three modes, a 22-action replay with
+identical `lastResult`/subprocess sequences/socket bytes, cross-writer
+settings.json stress, two-way clipboard DB handoff, weather state-machine
+script, charge pending→completed with a fake sysfs) — `scripts/check.sh --rust`.
+
+Idle fork rate is unchanged in parity mode (5 forks/s) by design: M3's niri
+socket path removes niri polls only when `NIRI_SOCKET` is present, and the
+nmcli/wpctl/busctl probes intentionally stay subprocesses for exact behavioral
+parity until the measured Phase 2 D-Bus migration. **needs real-machine
+validation**: RSS/forks under a real compositor session with `NIRI_SOCKET`
+set, wl-paste watchers, and one full `LME_SHELL_BACKEND=rust` session.

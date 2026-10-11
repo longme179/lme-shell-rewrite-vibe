@@ -173,6 +173,12 @@ depends on compositor support and is not required to run this shell. No
 continuous GPU blur shader or discrete-GPU requirement is introduced.
 
 Run `./scripts/check.sh` for the backend test suite and shell-script checks.
+An optional native Rust backend daemon (`lme-backend/`, JSON-lines parity with
+the Python backend) can be built with `./scripts/build-backend.sh` and selected
+for a session with `LME_SHELL_BACKEND=rust`; `./scripts/check.sh --rust` adds
+its fmt/clippy/test gate. The Python backend stays the default. See
+[lme-backend/README.md](lme-backend/README.md) and
+[docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md).
 
 See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for session issues and
 [docs/VALIDATION.md](docs/VALIDATION.md) for what can be checked in cloud and
@@ -189,6 +195,7 @@ laptop.
 shell.qml                   Quickshell entry point and panel IPC
 qml/                        Components, panels, and shared services
 scripts/desktop_backend.py  Desktop commands and live state; Python stdlib only
+lme-backend/                Optional native Rust backend (LME_SHELL_BACKEND=rust)
 scripts/install-fedora.sh   Preview/install Fedora packages
 scripts/install.sh          Safe user-config symlink installation
 scripts/start.sh            Startup and optional wallpaper restoration

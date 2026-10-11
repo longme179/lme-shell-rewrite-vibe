@@ -48,3 +48,38 @@ cargo fmt && cargo clippy -D warnings && cargo test
 `scripts/build-backend.sh` wraps this for the shell integration; the
 parity suite (`tests/parity.rs`) runs the Python backend in an identical
 fixture environment when `python3` is available.
+
+## Selecting the Rust backend (Phase 1 switch)
+
+The QML shell picks the backend with the `LME_SHELL_BACKEND` environment
+variable (read in `qml/services/ShellState.qml` and
+`qml/services/ClipboardState.qml`):
+
+```bash
+scripts/build-backend.sh                 # release build into target/release/
+LME_SHELL_BACKEND=rust qs -c lme-shell   # run the shell on the Rust daemon
+```
+
+Any other value (or unset) keeps the Python backend, which remains the
+default until one real-machine session with the Rust backend is clean.
+`scripts/check.sh --rust` runs the Python suite plus the full Rust gate
+(fmt + clippy -D warnings + test) in one command.
+
+## Known deliberate deviations from the Python wire behavior
+
+Both are unobservable for the QML client (it only sends well-formed UTF-8
+JSON) and are recorded here per the contract rules:
+
+1. The clipboard daemon answers malformed JSON with the fixed message
+   `Invalid JSON input`; Python surfaces its `json.JSONDecodeError` text
+   (e.g. `Expecting value: line 1 column 1 (char 0)`). The desktop-state
+   daemon uses the same fixed message in both implementations.
+2. Invalid UTF-8 on the clipboard daemon's stdin is replaced lossily;
+   Python rejects it with a `UnicodeDecodeError` message. Either way the
+   line fails to parse and produces an error `lastResult`.
+
+## Real-machine validation backlog
+
+Event-stream behavior under the real compositor, wl-paste watchers, and a
+full session with `LME_SHELL_BACKEND=rust` — see
+`docs/REWRITE_PLAN.md` (Phase 1 exit criteria).

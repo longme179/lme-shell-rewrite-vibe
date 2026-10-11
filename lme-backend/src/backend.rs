@@ -88,8 +88,8 @@ impl DesktopBackend {
             weather: weather
                 .unwrap_or_else(|| WeatherClient::new(Arc::new(crate::weather::HttpFetch::new()))),
             weather_fetch,
-            probes: SystemProbes::new(CommandRunner::new(), proc_root, sysfs_root),
-            charger: ChargeControl::new(PathBuf::from("/sys")),
+            probes: SystemProbes::new(CommandRunner::new(), proc_root, sysfs_root.clone()),
+            charger: ChargeControl::new(sysfs_root),
             use_niri_socket,
             apps,
             last_app_scan: Instant::now(),
