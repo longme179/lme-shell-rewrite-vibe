@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+"$(dirname "$0")/_log.sh" powerprofilesctl "$@"
+if [ "$1" = "get" ]; then printf 'balanced\n'; fi
+exit 0

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+"$(dirname "$0")/_log.sh" wpctl "$@"
+if [ "$1" = "get-volume" ]; then printf 'Volume: 0.45\n'; fi
+exit 0

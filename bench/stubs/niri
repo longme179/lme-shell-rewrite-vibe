@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+"$(dirname "$0")/_log.sh" niri "$@"
+if [ "$1" = "msg" ] && [ "$2" = "--json" ]; then
+  case "$3" in
+    workspaces) printf '[{"id":1,"idx":1,"name":null,"output":"eDP-1","is_focused":true,"is_active":true},{"id":2,"idx":2,"name":null,"output":"eDP-1","is_focused":false,"is_active":false}]\n' ;;
+    windows) printf '[{"id":10,"title":"Firefox","app_id":"firefox","workspace_id":1,"is_focused":true},{"id":11,"title":"kitty","app_id":"kitty","workspace_id":2,"is_focused":false}]\n' ;;
+    event-stream) sleep 300 ;;
+  esac
+elif [ "$1" = "msg" ]; then printf 'ok\n'; fi
+exit 0
