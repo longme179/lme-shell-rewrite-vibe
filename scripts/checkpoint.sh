@@ -49,7 +49,10 @@ else
   git format-patch -q --binary -o "$S/patches" "$BASE..HEAD"
 fi
 git diff HEAD --binary > "$S/wip.patch"
-git ls-files -o --exclude-standard -z | tar --null -T - -cf "$S/untracked.tar"
+[ -s "$S/wip.patch" ] || rm -f "$S/wip.patch"   # empty diff -> no file (RESTORE skips it)
+if [ -n "$(git ls-files -o --exclude-standard)" ]; then
+  git ls-files -o --exclude-standard -z | tar --null -T - -cf "$S/untracked.tar"
+fi
 for f in STATE.md docs/REBUILD_SPEC.md; do
   if [ -f "$f" ]; then cp "$f" "$S/$(basename "$f")"; fi
 done
@@ -68,7 +71,7 @@ Mode: full (repo.bundle carries all branches)
 2. unzip ckpt-NNN.zip && cd ckpt-NNN
 3. git clone repo.bundle lme && cd lme
 4. git checkout <branch named in ../MANIFEST.txt>   (other branches: git branch -a)
-5. git apply ../wip.patch ; if ../untracked.tar exists: tar -xf ../untracked.tar
+5. if ../wip.patch exists: git apply ../wip.patch ; if ../untracked.tar exists: tar -xf ../untracked.tar
 6. Read STATE.md first, then docs/REBUILD_SPEC.md, then continue.
 EOF
 else
@@ -79,7 +82,7 @@ Mode: lean (patches on top of the public upstream base recorded in BASE.txt)
 3. git clone https://github.com/longme179/lme-fedora-niri-qs.git lme && cd lme
 4. git checkout -b <branch named in ../MANIFEST.txt> "$(cat ../BASE.txt)"
 5. git am ../patches/*.patch
-6. git apply ../wip.patch ; if ../untracked.tar exists: tar -xf ../untracked.tar
+6. if ../wip.patch exists: git apply ../wip.patch ; if ../untracked.tar exists: tar -xf ../untracked.tar
 7. Read STATE.md first, then docs/REBUILD_SPEC.md, then continue.
 EOF
 fi
