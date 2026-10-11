@@ -21,7 +21,3 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # Clipboard entry ids: sha256(mime ++ data), identical to the Python service.
 sha2 = "0.10"
 
-[profile.release]
-opt-level = "z"
-lto = true
-strip = true

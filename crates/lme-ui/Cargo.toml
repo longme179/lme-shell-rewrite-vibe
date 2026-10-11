@@ -1,0 +1,21 @@
+[package]
+name = "lme-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LME Shell native UI toolkit: CPU renderer, text, widgets, animation, Wayland surfaces"
+publish = false
+
+[dependencies]
+smithay-client-toolkit.workspace = true
+wayland-client.workspace = true
+calloop.workspace = true
+calloop-wayland-source.workspace = true
+tiny-skia.workspace = true
+cosmic-text.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# PNG decode for theme icons (pure Rust)
+png = "0.18"
+
+[dev-dependencies]
