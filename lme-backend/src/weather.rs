@@ -403,12 +403,13 @@ impl WeatherClient {
     }
 
     pub fn close(&mut self) {
+        // Mirror the Python `executor.shutdown(wait=False)`: never block on
+        // an in-flight request (e.g. a slow DNS lookup at teardown). The
+        // detached thread dies with the process.
         if let Some(sender) = self.submit.take() {
             drop(sender);
         }
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.worker.take();
     }
 }
 
