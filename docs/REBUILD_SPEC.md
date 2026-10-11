@@ -18,8 +18,8 @@ allows.
 
 | README feature | Status | Where specified |
 |---|---|---|
-| Power menu (lock/suspend/logout/restart/shutdown, confirmations) | partial → full in Step 2.1 | §5 below; action semantics §3.4 |
-| Application launcher (keyboard-searchable `.desktop` list) | partial → full in Step 2.2 | §6 below; scan/launch semantics §3.2/§3.4 |
+| Power menu (lock/suspend/logout/restart/shutdown, confirmations) | partial → full in Step 2.1 | §5 below; action semantics §3.4 (QML unchanged in Step U sync) |
+| Application launcher (multi-mode search: apps/fuzzy/favorites, = calc, : emoji, @ windows) | partial → full in Step 2.2 | §6 + §6.1 below; scan/launch semantics §3.2/§3.4 |
 | Modular per-output top bar (15 modules, 3 zones) | not started (Phase 2 out of scope) | data feeds: §3.1 snapshot |
 | Overview button / native overview | not started | — |
 | System tray dropdown | not started | — |
@@ -97,6 +97,15 @@ executes power actions via **systemd-logind on the system D-Bus** instead of
 `systemctl` CLI; lock/logout semantics unchanged (swaylock spawn / niri quit).
 Dry-run mode is mandatory for tests.
 
+**Upstream note (Step U sync, 2026-10-11):** the Python backend grew a large
+feature wave (wifi, night light, capture/OCR, monitors, keybinds, displays,
+idle, notification history, feature-job `pending` semantics for `lock`) —
+9 new top-level snapshot fields and ~28 new preference keys that
+`lme-backend` does not implement (parity blocker, see STATE.md and
+docs/UPSTREAM_SYNC.md). The Phase 0-frozen surface above is unchanged;
+the native Phase 2 clients consume only the frozen surface plus the actions
+listed in their own sections.
+
 ### 3.5 Error/edge contract
 Any failure → `lastResult{ok:false, message:str(exc)[:400], sequence}` shown
 as a status toast. Subprocess env: `LC_ALL=C`. `settings.json` cross-writer
@@ -153,9 +162,35 @@ Known today: XDG data-dirs `.desktop` scan; entry fields
 (`LC_*` resolution); `NoDisplay`/`Hidden`/`OnlyShowIn` filtering; launch
 semantics §3.4 (no shell, Terminal handling, app must survive the client);
 searchable + keyboard navigation; rescan cadence 60 s. No extra features
-(frecency/plugins/calculator — ideas list in docs/, not implemented).
+(frecency/plugins — ideas list in docs/, not implemented).
 QML reference: `qml/panels/Launcher.qml`. Full behavioral spec (ranking,
 key handling, icons, Actions) written in Step 2.2.
+
+### 6.1 Upstream rework (2026-10-11, pre-2.2 — spec must follow this)
+
+The QML launcher was reworked in the Step U upstream sync
+(`docs/UPSTREAM_SYNC.md`). Step 2.2's native client must match THIS
+behavior, not the Phase 0 baseline:
+
+- **Multi-mode query**: apps (default); `=` prefix or a bare math
+  expression → calculator (backend `calculate` action, 140 ms debounce,
+  Enter copies result); `:` prefix → emoji picker (`assets/emoji.json`,
+  up to 100 results, Enter copies); `@` prefix → open-window switcher
+  (niri `focusWindow`), also auto-appended to app results when the text
+  matches a window title/app-id.
+- **Fuzzy ranking** (`qml/services/LauncherSearch.js`): exact 100 /
+  prefix 85 / substring 70 / genericName+comment+keywords 55 /
+  subsequence 40−len-gap / per-word Levenshtein (≤ min(2, len/3)) 20;
+  ≤ 8 space-separated terms, AND semantics; sort score desc →
+  favorites-first → `name.localeCompare`.
+- **Favorites**: `preferences.favoriteApps[]` + Favorites-only toggle;
+  toggled via the `setting` action.
+- List results (icon 36 px, name, detail line), input `maximumLength: 160`,
+  placeholder "Apps · = calculate · : emoji · @ windows"; app launch still
+  `launch {id}` with unchanged §3.4 semantics.
+- IPC/toggle behavior to match in the native client (from the QML):
+  `ShellState.launcherOpen` toggle, single instance, focus-search on open,
+  Esc closes, selection resets on open.
 
 ## 7. Explicitly out of Phase 2 scope
 Polkit popup (security review required), lock screen/ext-session-lock, bar,

@@ -1,6 +1,7 @@
 # ADR 0001: Native UI stack for the Phase 2 layer-shell clients
 
-- Status: **Proposed — awaiting owner decision** (Step 2.0 stop condition)
+- Status: **Accepted** (owner decision 2026-10-11, PHASE2_AMENDMENT_1; see
+  "Decision (owner)" below)
 - Date: 2026-10-11 · Branch: `rewrite/phase-2`
 - Decides: the rendering/input stack for `lme-powermenu` (Step 2.1) and
   `lme-launcher` (Step 2.2), both standalone Wayland layer-shell clients on
@@ -159,3 +160,25 @@ memory.
    the three integration costs + licensing)?
 2. If A: damage-track from the start (more code) or full-redraw per frame
    while shown (simpler; panels are transient)?
+
+## Decision (owner, 2026-10-11 — PHASE2_AMENDMENT_1)
+
+**Accepted: Option A — smithay-client-toolkit 0.21.1 + tiny-skia 0.12.0 +
+cosmic-text 0.19.0 (the exact spike versions; pin them in every Phase 2
+client), wl_shm CPU rendering. Clients are spawn-on-demand** (cold start
+7–9 ms bind→map makes on-demand spawning free). Options B and C are not
+chosen; B's EGL code stays in-tree as the documented escalation path only.
+
+Reasons recorded by the owner: full cloud validation of A (pixel-verified
+Roboto text, 0% idle CPU, no GPU/runtime dependencies), license-clean
+dependencies, and transient small panels that do not need GPU effects.
+
+Riding along with the acceptance:
+
+- **Rendering: full redraw of the panel every frame while visible; no
+  damage tracking.** Revisit only if profiling shows a problem; record the
+  numbers if so. (Spike reference: 9.3% of one container core at a constant
+  120 Hz full-panel redraw — an upper bound.)
+- **Keyboard interactivity (from niri v25.11 source): power menu =
+  `Overlay` + `Exclusive`; launcher = `Overlay` + `OnDemand`.** The focus
+  *feel* with real typing remains **needs real-machine validation**.

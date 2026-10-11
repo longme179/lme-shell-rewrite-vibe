@@ -264,3 +264,27 @@ those items remain parked for a later phase. Step 2.0 (stack spike + ADR)
 is complete: see `docs/adr/0001-native-ui-stack.md` (recommendation pending
 owner decision), `docs/REBUILD_SPEC.md`, `STATE.md`, and the spike sources
 under `native/spike/`.
+
+---
+
+## Addendum (2026-10-11, PHASE2_AMENDMENT_1 / Step U): upstream synced, ADR accepted
+
+- `rewrite/phase-2` rebased onto `origin/main` `ef5281c` (old→new hash map
+  in `docs/UPSTREAM_SYNC.md` and STATE.md); one conflict (THIRD_PARTY.md)
+  resolved keeping both sides; `rewrite/phase-0`/`phase-1` repointed to the
+  rebased equivalents; history stays linear.
+- ADR 0001 **Accepted**: stack A (sctk 0.21.1 + tiny-skia 0.12.0 +
+  cosmic-text 0.19.0, pinned), spawn-on-demand clients, full redraw while
+  shown, keyboard modes menu=Overlay+Exclusive / launcher=Overlay+OnDemand.
+- Upstream feature wave (wifi/night-light/capture/monitors/keybinds/idle)
+  diverges `lme-backend` from `desktop_backend.py` → 4 golden parity tests
+  fail; classified **blocker for the owner** (Phase-1.5-scale port, not a
+  small fix). Frozen-contract parity remains green elsewhere (50/54 total).
+- QML launcher reworked upstream (multi-mode + fuzzy ranking + favorites);
+  Step 2.2 must follow the new behavior (REBUILD_SPEC §6.1). Power menu
+  unchanged.
+- **Steps 2.1/2.2 are HELD**: the original Phase 2 specification text was
+  lost at session handover; the owner was asked to re-paste it (to be
+  saved verbatim as `docs/PHASE2_SPEC.md`) before `lme-powermenu` work
+  starts. Everything else in the amendment (Steps C, U, baseline
+  replication report) is done.

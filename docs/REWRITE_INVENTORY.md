@@ -229,3 +229,36 @@ Clipboard event adds one `python3 clipboard.py --capture <kind>` process
    directions (Python fallback must keep working against Rust-written state).
 5. Any intentional deviation gets a version note in `docs/REWRITE_PLAN.md`
    **before** the QML changes.
+
+---
+
+## 8. Addendum (2026-10-11, Step U upstream sync): surface growth after the freeze
+
+The Phase 0 freeze above (§2, at `ead4446`) remains the contract
+`lme-backend` implements. Upstream `origin/main` moved to `ef5281c`
+(+5 commits, 107 files, +5609/−705; full classification in
+`docs/UPSTREAM_SYNC.md`). Delta vs this inventory, relevant to any later
+parity catch-up port:
+
+- **Snapshot**: new top-level fields `wallpaperLibrary`, `displays`,
+  `keybinds`, `idle`, `platform{niriVersion,popupBlurSupported}`,
+  `nightLight`, `capture{status,error,ocrText,languages}`, `monitor`,
+  `notificationHistory`; `system.battery.acOnline`;
+  `system.network{device,networks[+security,secured,enterprise,bssid],saved[]}`.
+- **Preferences**: ~28 new keys (appearance profiles, bar geometry,
+  density, motion presets, night light, idle profiles, favorites,
+  notification muting, popup blur, theme/font overrides, wallpaper
+  library, niriConfigPath) — schema now lives partly in
+  `scripts/desktop_features.py`.
+- **Actions**: new `calculate`, `focusWindow`, feature-job actions
+  (`wallpaperScan`, `captureOcr`, …) with background threads and
+  `lastResult{pending:true,"Working…"}` semantics; **`lock` is now a
+  feature job** (immediate pending ack, completion result follows).
+- **New scripts**: `desktop_features.py`, `display_control.py`,
+  `idle_control.py`, `night_light.py`, `niri_keybinds.py`,
+  `screen_capture.py`, `system_monitor.py`.
+- **Launcher**: multi-mode rework (see REBUILD_SPEC §6.1). **Power menu:
+  unchanged.**
+- Clipboard (`clipboard.py`) and weather (`weather.py`): unchanged in this
+  wave (parity still green: clipboard_cross 5/5, weather_parity 1/1,
+  prefs_cross 4/4, loopd 3/3, niri_socket 3/3).
