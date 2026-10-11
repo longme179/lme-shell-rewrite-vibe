@@ -1,248 +1,149 @@
-# LME Shell
+# lme-shell — native Wayland shell for Fedora 44 + niri 25.11+
 
-A Quickshell desktop shell for **Fedora 44 + niri**, written in QML/Qt Quick
-with a small Python standard-library backend. All interface text, code, and
-documentation are in English.
+The native Rust rewrite of [LME Shell](https://github.com/longme179/lme-fedora-niri-qs)
+(QML/Quickshell UI + Python backend, GPL-3.0-or-later). One daemon owns the
+bars, panels, OSD and services; a CPU renderer (no GPU, no Qt) draws
+everything behind a `RenderBackend` seam. The legacy shell stays untouched in
+[`legacy/`](legacy/) as the executable specification and runtime fallback.
 
-The layout combines a compact top bar and a control sidebar on the right.
-Its Material 3 Expressive inspired controls sit on Liquid glass surfaces, with a
-dark Dracula Pro-style palette, flat tonal fills, Roboto typography, rounded
-shapes, and eased slide animations suitable
-for an integrated Radeon GPU.
+**Status: Tier 0 complete, Tier 1 mostly complete (this is an interim
+delivery, not a finished shell).** Built and verified headless against a mock
+Wayland compositor in a cloud sandbox — everything marked *needs real-machine
+validation* below was compiled and unit/integration-tested, but never ran
+against real niri or real hardware. Do not replace your working QML shell
+with this yet.
 
-The interaction design takes inspiration from
-[end-4/dots-hyprland](https://github.com/end-4/dots-hyprland) and
-[snowarch/iNiR](https://github.com/snowarch/iNiR). This is a separate
-niri implementation; it uses niri IPC and Fedora utilities rather than Hyprland
-commands or Arch installation scripts.
+## What works (and how it was tested)
 
-![Material glass desktop rendered from QML with sample data](docs/previews/control.png)
+| Feature | Status | Tested by | Real-machine needed |
+|---|---|---|---|
+| Daemon + `lme-shell msg` IPC (toggle/close/refresh/status/osd/power) | done | e2e vs mock compositor + unit | no |
+| Per-output bar: 3 zones from `barLayout`, connected pill, margins/height/font size | done | golden PNG (docs/screens/bar.png) | no |
+| Bar modules: clock (minute-boundary), workspaces, window title, launcher/overview/notifications/settings/clipboard buttons, battery, network, audio | done (data via sysfs + niri IPC; network/audio show real values only when the backend feeds them) | golden + e2e | niri stream, nmcli/wpctl feeds |
+| Bar modules: media, resources, activity island | missing (no MPRIS/probe feed wired) | — | — |
+| Launcher: apps mode with fuzzy ranking (exact port of `LauncherSearch.js`), favorites | done | unit + e2e (typed keys, Enter, Esc) | no |
+| Launcher `=` calculator, `:` emoji (assets/emoji.json, copy on Enter), `@` windows | done | unit (calculator/emoji/mode-detect) | focus-window spawn needs niri |
+| Power menu: Lock/Suspend/Log out/Restart/Shut down, confirmations for destructive actions, Esc closes, Overlay+Exclusive on the focused output | done | golden PNG + e2e key injection | yes (visual) |
+| Power actions: logind D-Bus (Suspend/Reboot/PowerOff), `swaylock --color 22212c`, `niri msg action quit --skip-confirmation` | done, dry-run tested | unit (dry-run executor) | **yes — logind/swaylock/niri calls** |
+| OSD popups + status toasts (auto-expiry) | done | e2e | no |
+| settings.json + palette.json hot reload (inotify), upstream-added keys preserved on writes | done | unit (tmp dirs) | no |
+| Idle cost: 2 CPU ticks / 60 s, 0.15 wakeups/s, 11.6 MB RSS, 10 ms cold start | done | bench (docs/PERF.md) | re-measure on laptop |
+| Panel reveal animation: frame-callback driven, render p95 2.5 ms | done | bench | fps at real refresh rate |
+| Notification daemon (toasts/history/DND), system tray, control center, clipboard UI, settings window, Wi-Fi/Bluetooth panels, night light, weather UI, activity island | **missing (Tier 2/3)** | — | — |
+| Backend services (niri IPC, prefs with cross-writer locking, weather, clipboard store, app scan, charging) | done (frozen Phase 0 contract) | 50 golden parity tests vs the Python backend | no |
 
-## Included
+Full line-by-line status: [`docs/NATIVE_PLAN.md`](docs/NATIVE_PLAN.md).
 
-- Modular per-output top bar: 15 modules, three configurable zones, drag/drop
-  and keyboard ordering, optional media/resources, and live layout changes.
-  The default is one connected glass pill; three islands are also available.
-  Workspaces follow their numeric order per output. Bar labels use consistent
-  Roboto Medium, adjustable from 12 to 16 px.
-- Overview button for niri's live window previews and drag/drop. Right-click it
-  for a themed workspace board with app icons, titles, drag/drop and a keyboard
-  workspace selector for each window.
-- System tray dropdown with compact icons, application labels, and native menus.
-- Local text/image clipboard history: search, previews, pins, pause and confirmed
-  clearing. Open with Super+V; requires `wl-clipboard`.
-- Expanding Activity island with MPRIS controls, shared focus timer/stopwatch and
-  supported recorder status; eased resizing with flat glass surfaces. See
-  [clipboard and Activity setup](docs/CLIPBOARD_ACTIVITY.md).
-- Smart launcher with fuzzy app search, favorites, arithmetic, emoji and open-window search.
-- Wider control center with Controls, Audio, Devices, Agenda and Notifications
-  tabs, saved draggable tiles/cards and full/half sizes: speaker/microphone volume and mute, backlight, radios, power profiles,
-  idle inhibition, Night Light, motion, Screenshot studio and system information.
-- Night Light with manual, local-time and sunset schedules using `wlsunset`.
-- Screenshot studio: native niri capture, Pen/Highlight/Rectangle/Arrow/Redact,
-  undo/redo, zoom, original-resolution PNG export, image copy and local OCR.
-- Liquid hover/press shape feedback and ripples, retained panel exit transitions,
-  animated Settings pages, Smooth/Expressive/Jelly presets, adjustable speed/bounce, reduced motion
-  and Appearance profile integration. See [setup and usage](docs/CAPTURE_NIGHT_MOTION.md).
-- Native PipeWire device selection and individual device/application sliders;
-  Bluetooth adapter selection, paired-device connect/disconnect and rfkill
-  diagnostics, plus Wi-Fi scanning, password entry and saved-network management.
-- Automatic local weather by approximate IP location, current conditions and
-  a three-day forecast; city search, manual location and °C/°F in Settings.
-- Lenovo charging controls: verified 85%/100% thresholds when exposed, with
-  firmware conservation mode as the fallback. See [charging setup](docs/CHARGING.md).
-- Built-in Polkit authentication popup: password entry, retry and cancellation
-  work when the shell starts from niri without a terminal. See [authentication](docs/AUTHENTICATION.md).
-- Wallpaper folder library, thumbnails, search and favorites through `awww`, with automatic daemon startup.
-- English calendar, saved to-do list, focus timer and stopwatch.
-- MPRIS media controls for compatible players and an English date/time display.
-- Native notifications with persistent, searchable app groups, per-app popup rules and timed Do Not Disturb.
-- Independent Settings application with searchable Appearance, Elements and fonts, Top bar,
-  Control center, Displays, Wallpaper, Weather, Clipboard, Idle and sleep, Keyboard shortcuts, Behavior and About pages. Open it without starting the shell.
-  Changes synchronize with the running shell; preferences are merged under a
-  file lock so another client’s task updates are preserved.
-- Live hex editing for 44 UI color roles, five font roles and body size, included
-  in Appearance profiles. Top/bottom bar placement, edge/side margins and height
-  update the bar and associated popups. See [personalization](docs/PERSONALIZATION.md).
-- On-demand system monitor: CPU/RAM charts, CPU thread loads/temperature, network rates and sortable searchable processes without GPU probes.
-- Separate AC/battery idle profiles, display wake on input and a confirmed session lock before suspend; searchable niri keybindings with include support.
-- Optional full-screen popup blur on niri 26.04+, including the expanded Activity Island; see [laptop features and blur setup](docs/LAPTOP_FEATURES.md).
-- Saved appearance profiles and safe niri display previews with independent automatic revert.
-- Material tonal surfaces, expressive switches/sliders and shape transitions,
-  bold Roboto headings, and translucent glass without UI gradients.
-- Lock, suspend, logout, restart, and shutdown actions with confirmation for
-  destructive actions.
-- Optional original wallpaper, package requirements, installation scripts,
-  niri bindings, and troubleshooting documentation.
+## Architecture
 
-First-time Bluetooth pairing, enterprise Wi-Fi setup and advanced audio configuration open the existing Fedora
-tools (`nm-connection-editor`, `blueman-manager`, and `pavucontrol`). The shell
-does not implement a password manager or replace NetworkManager.
+- [`docs/adr/0001-native-ui-stack.md`](docs/adr/0001-native-ui-stack.md) —
+  rendering stack: smithay-client-toolkit 0.21 + tiny-skia + cosmic-text,
+  full redraw while visible (validated by the Phase 2 spike).
+- [`docs/adr/0002-daemon-architecture.md`](docs/adr/0002-daemon-architecture.md) —
+  one daemon, lazy panel surfaces, one calloop loop; `lme-shell msg` over a
+  unix socket; settings as a separate process (Tier 3, stubbed).
+- `crates/lme-ui` — the toolkit: display-list `DrawCmd`s → `RenderBackend`
+  (CPU implementation validated; a GPU backend is a documented seam,
+  deliberately not written — untested GPU code is a liability).
+- `crates/lme-backend` — the Phase 1 services library (linked in-process);
+  its binary still serves the legacy QML shell via `LME_SHELL_BACKEND=rust`.
 
-## Install
-
-The target machine already has niri installed. Check the package requirements
-and installation details in [docs/INSTALL.md](docs/INSTALL.md).
+## Build (Fedora 44)
 
 ```bash
+# dnf packages (same as the legacy shell, minus quickshell):
+sudo dnf install gcc rustc cargo wayland-devel libxkbcommon-devel \
+                 google-roboto-fonts swaylock niri
+# (the shell also calls: niri msg, gio, wl-copy, wl-clipboard, awww — see below)
+
 git clone https://github.com/longme179/lme-fedora-niri-qs.git
 cd lme-fedora-niri-qs
-
-# Show packages first. This command changes nothing.
-./scripts/install-fedora.sh --optional
-
-# On Fedora: install packages from enabled repositories.
-./scripts/install-fedora.sh --install --optional
-
-# Link this checkout into the current user's Quickshell config.
-./scripts/install.sh
-
-# Register the separate settings app in the application launcher.
-./scripts/install-settings.sh
-
-# Run inside a niri Wayland session.
-./scripts/start.sh
+cargo build --release          # one workspace, one target dir
+# binary: target/release/lme-shell
 ```
 
-If Quickshell is absent from enabled repositories, the installer stops and
-explains the upstream-documented COPR option. It never adds a repository silently.
-Keep the checkout in place: the installation is a symlink to this directory.
-Install both `awww` and `awww-daemon` for wallpaper support; see
-[the upstream and Fedora instructions](docs/INSTALL.md#wallpaper-and-charging).
-Charging needs a one-time local helper installation:
+Optional at runtime: `swaylock` (Lock), `wl-copy` (launcher copy actions),
+`awww`/`awww-daemon` (wallpaper, Tier 2), `nm-connection-editor`,
+`blueman-manager`, `pavucontrol` (external tools the full shell opens).
+The shell never needs root; power actions go through logind.
+
+## Run
 
 ```bash
-sudo ./scripts/install-charge-helper.sh --install
+# inside a niri session:
+lme-shell daemon &             # bars appear on every output
+lme-shell msg status           # daemon status JSON
+lme-shell msg toggle launcher  # open/close the launcher
+lme-shell msg toggle power     # power menu
+lme-shell msg close            # close open panels
+lme-shell msg osd Volume 40    # OSD popup
+lme-shell msg power suspend    # logind suspend (add --dry-run to the daemon for tests)
 ```
 
-The shell stays unprivileged; Polkit requests administrator authentication when
-needed. A fixed firmware conservation limit cannot be changed to exactly 85%.
-Weather uses HTTPS services with no API key or extra Python packages.
+Merge [`config/niri/lme-shell-native.kdl`](config/niri/lme-shell-native.kdl)
+into your niri config for the legacy key bindings (Mod+Space launcher,
+Mod+Shift+E power, …). The shell never edits `~/.config/niri/config.kdl`.
 
-Merge [config/niri/lme-shell.kdl](config/niri/lme-shell.kdl) into your existing
-niri configuration after checking for duplicate bindings. The installer never
-overwrites `~/.config/niri/config.kdl`.
+Configuration files are unchanged from the legacy shell:
+`~/.config/lme-shell/settings.json` (hot-reloaded; keys upstream added after
+the Phase 0 freeze are preserved on writes) and
+`~/.config/lme-shell/palette.json` (12 Dracula-style color roles).
 
-| Shortcut | Action |
-| --- | --- |
-| `Mod+Tab` | niri live overview |
-| `Mod+Shift+Tab` | Shell workspace board |
-| `Mod+Space` | Application launcher |
-| `Mod+A` | Control center |
-| `Mod+N` | Notifications |
-| `Mod+V` | Clipboard history |
-| `Mod+Shift+A` | Activity island |
-| `Mod+Comma` | Separate Settings app |
-| `Mod+Shift+E` | Power menu |
-| `Escape` | Close an open panel |
+## Measured performance (cloud sandbox — not laptop numbers)
 
-`Mod` is normally Super/Windows in a normal niri session. `Mod+Comma` and
-`Mod+Shift+E` have other meanings in niri's sample configuration; remove or
-rebind the existing entries before adding these bindings.
+See [`docs/PERF.md`](docs/PERF.md) for method and full tables. Release build,
+1280×800, one output, bar only: **2 CPU ticks over 60 s** (the 30 s battery
+sysfs read and the minute clock), **0.15 wakeups/s**, **11.6 MB RSS**,
+**10 ms** bind→first-frame, panel reveal renders at **p95 2.5 ms** (8.3 ms
+budget at 120 Hz). The legacy QML shell idled at 120–190 MB with ~10
+subprocesses per 2 s poll.
 
-The expanded shell requires **Quickshell 0.3.2+** with PipeWire and Wayland
-support, and **niri 25.11+**. The overview's live thumbnails are rendered by niri;
-the QML board lists windows with their titles and icons. See
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all control-center features.
+## Real-machine validation checklist (do these first)
 
-## Configuration and validation
+1. Bars on all outputs at login; exclusive zone correct with niri's own bar
+   disabled; pointer cursor visible over bar and panels (cursor image is
+   hand-drawn — no cursor-theme dependency).
+2. `lme-shell msg toggle power` → menu opens on the **focused** output,
+   confirmations appear, and **suspend/reboot/poweroff actually work through
+   logind**; Lock spawns swaylock; Log out runs `niri msg action quit`.
+3. Launcher: typing filters apps (fuzzy, favorites), `=2*21` shows 42,
+   `:rainbow` finds 🌀, `@` lists open windows, Enter launches/copies/focuses.
+4. Keyboard feel: Esc closes panels; arrow keys move launcher selection and
+   power-menu focus; typing reaches the launcher instantly.
+5. Idle: `grep -E 'utime|stime' /proc/$(pidof lme-shell)/stat` stays flat
+   over a minute; `vmstat 1` shows no wakeups attributable to the shell.
+6. Panel reveal smoothness at your display's refresh (frame-callback driven;
+   the sandbox could only prove render times, not vsync pacing).
+7. Pointer input: clicks on bar buttons, workspace pills, power-menu buttons
+   (the sandbox compositor has no pointer — **this path is entirely
+   untested**).
 
-User preferences live in `~/.config/lme-shell/settings.json`, separate from the
-checkout. Palette overrides live in `~/.config/lme-shell/palette.json`. See
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+## Known limitations (honest list)
 
-```bash
-# Check tools and session connectivity without changing system state.
-./scripts/doctor.sh
+- Tier 2/3 features are missing: notification daemon, tray, control center,
+  clipboard UI, settings window, Wi-Fi/Bluetooth/night-light/weather UIs,
+  activity island, workspace board, idle management. Toggling them via `msg`
+  or the bar shows an OSD notice instead of pretending.
+- Pointer input is implemented but never exercised (mock compositor has no
+  pointer); keyboard is fully covered by the golden tests.
+- No fractional-scale-v1 support yet (integer scale only; buffers are
+  logical-sized). On HiDPI outputs at fractional scales the shell will look
+  wrong until that lands.
+- The media/resources/activity bar modules have no data feed, so they stay
+  hidden even when enabled in settings.
+- The launcher's `calculate` mode evaluates locally (no backend round-trip) —
+  a deliberate deviation, logged in docs/DECISIONS.md D13.
+- `lme-backend` implements the Phase 0 frozen Python contract; the upstream
+  feature wave (wifi/night-light/capture/monitors/keybinds/displays/idle/
+  notification history) is not ported (4 parity tests `#[ignore]`d, see
+  docs/UPSTREAM_SYNC.md).
+- No GPU rendering path (by decision: it could not be tested here). The CPU
+  renderer's numbers above are the honest ceiling for this build.
 
-# Preview with sample data; desktop actions and saved settings are disabled.
-./scripts/start.sh --preview
+## Licensing and attribution
 
-# A read-only snapshot of real integration state.
-python3 scripts/desktop_backend.py --once
-```
-
-The implementation is designed for the Lenovo IdeaPad Gaming 3 15ARH7 with
-Ryzen 5 7535HS, integrated Radeon graphics, RTX 4050 Laptop, 16 GB RAM, and a
-1920×1080 120 Hz panel. Real hardware validation still belongs on that laptop;
-cloud tests cannot establish graphics, backlight, radio, or suspend behavior.
-The shell does not install graphics drivers or change disk partitions.
-
-The default glass effect is transparency with highlights. Background blur
-depends on compositor support and is not required to run this shell. No
-continuous GPU blur shader or discrete-GPU requirement is introduced.
-
-Run `./scripts/check.sh` for the backend test suite and shell-script checks.
-An optional native Rust backend daemon (`lme-backend/`, JSON-lines parity with
-the Python backend) can be built with `./scripts/build-backend.sh` and selected
-for a session with `LME_SHELL_BACKEND=rust`; `./scripts/check.sh --rust` adds
-its fmt/clippy/test gate. The Python backend stays the default. See
-[lme-backend/README.md](lme-backend/README.md) and
-[docs/REWRITE_PLAN.md](docs/REWRITE_PLAN.md).
-
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for session issues and
-[docs/VALIDATION.md](docs/VALIDATION.md) for what can be checked in cloud and
-what needs a real Fedora desktop session.
-
-Preview images are stored in [docs/previews](docs/previews). They were rendered
-from the actual QML with sample state or native-service test fixtures. Their
-captions identify the inputs; they are not screenshots from the user's Fedora
-laptop.
-
-## Project layout
-
-```text
-shell.qml                   Quickshell entry point and panel IPC
-qml/                        Components, panels, and shared services
-scripts/desktop_backend.py  Desktop commands and live state; Python stdlib only
-lme-backend/                Optional native Rust backend (LME_SHELL_BACKEND=rust)
-scripts/install-fedora.sh   Preview/install Fedora packages
-scripts/install.sh          Safe user-config symlink installation
-scripts/start.sh            Startup and optional wallpaper restoration
-scripts/doctor.sh           Read-only environment checks
-config/niri/                Configuration fragment; never applied automatically
-assets/wallpapers/          Original wallpaper source and raster image
-docs/                       Installation, settings, troubleshooting, validation
-requirements-fedora.txt     Required and optional DNF packages
-```
-
-Licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE) and
-[THIRD_PARTY.md](THIRD_PARTY.md) for upstream attribution and asset provenance.
-
-## Personalize
-
-Open **LME Shell Settings** from your launcher or run:
-
-```bash
-./scripts/settings.sh
-./scripts/settings.sh --page topbar
-./scripts/settings.sh --demo
-```
-
-Settings uses its own window and can run while the desktop shell is stopped.
-The demo uses a separate entry point and never saves preferences or applies a
-wallpaper. **Weather** controls automatic location, city search and units.
-**Top bar** lets you move modules between Left, Center and Right,
-reorder with a drag grip or arrow buttons, add/remove modules, change the shape,
-and adjust text size. Restore default layout resets the module arrangement only.
-
-![Standalone Settings application with sample data](docs/previews/settings.png)
-
-See [docs/INIR_PORT.md](docs/INIR_PORT.md) for the iNiR feature mapping and the
-Material/glass design choices. The required Fedora font package is
-`google-roboto-fonts`; no fonts or upstream artwork are bundled.
-
-The seven desktop upgrades—appearance profiles, display previews with automatic
-revert, persistent grouped notifications, wallpaper browsing, modular controls,
-smart launcher and in-shell Wi-Fi—are documented in
-[Desktop upgrades](docs/DESKTOP_UPGRADES.md). Screenshots: [profiles](docs/previews/appearance-profiles.png),
-[displays](docs/previews/display-settings.png), [wallpaper library](docs/previews/wallpaper-library.png),
-[modular controls](docs/previews/control-layout.png), [notifications](docs/previews/notifications-grouped.png)
-[Wi-Fi](docs/previews/wifi-connections.png) and [launcher](docs/previews/smart-launcher.png).
-
-Latest laptop previews: [system monitor](docs/previews/system-monitor.png), [idle profiles](docs/previews/idle-profiles.png), [keybindings](docs/previews/keybind-viewer.png). Setup and limits: [docs/LAPTOP_FEATURES.md](docs/LAPTOP_FEATURES.md).
-
-Night Light, Screenshot studio and customizable motion are documented in
-[Capture, Night Light and motion](docs/CAPTURE_NIGHT_MOTION.md). Actual QML previews:
-[Night Light](docs/previews/night-light.png), [motion presets](docs/previews/motion-presets.png)
-and [Screenshot studio](docs/previews/screenshot-studio.png).
+GPL-3.0-or-later (see [LICENSE](LICENSE), [THIRD_PARTY.md](THIRD_PARTY.md)).
+The engineering reference is [Noctalia](https://github.com/noctalia-dev/noctalia)
+(MIT) — no code or assets copied. Motion curves derive from
+DankMaterialShell (MIT, notice in `third_party/`). Vendored Roboto variable
+font is OFL. The legacy QML shell remains in `legacy/` untouched.

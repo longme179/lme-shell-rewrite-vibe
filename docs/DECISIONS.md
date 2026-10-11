@@ -97,3 +97,37 @@ Interim deliveries at each tier end use labels TIER-N; final uses FINAL.
 If context/time forces an early stop, the label states the last green tier
 and the README coverage table is the source of truth (never claim "works"
 for mock-only features; use "implemented, needs real-machine validation").
+
+## D13 — Launcher calculator evaluates locally
+Upstream's QML launcher calls the backend `calculate` action (140 ms debounce,
+result via lastResult). The native launcher evaluates arithmetic in-process
+(recursive-descent parser, `=`-prefix or bare-expression detection ported
+from Launcher.qml). Reason: no IPC round trip, deterministic unit tests, same
+user-visible behavior (result row, "Enter to copy result"). Deviation noted
+here per mission rule (code wins; this is a conscious behavior-compatible
+simplification).
+
+## D14 — Swash Color glyph format
+cosmic-text/swash color bitmaps (emoji) are straight-alpha RGBA, not
+premultiplied BGRA (the spike's assumption — it never rendered emoji, so the
+bug survived until the first golden run). Fixed by premultiplying during the
+blit; documented so the GPU backend port doesn't re-make the mistake.
+
+## D15 — Animation completion (was_active)
+When the last tween completes inside `Animator::tick`, the render pass must
+still call `AppHandler::tick` once so windows clear their `animating` flag —
+otherwise panels request frame callbacks forever (found by the paced-fps
+bench: renders never stopped after the reveal). The render pass now checks
+active-before-and-after.
+
+## D16 — Bar surface sizing
+The daemon sets `set_size(0, bar_height)` for bar surfaces (width 0 = derive
+from the anchored output edges); the mock compositor now honors per-axis
+set_size. Before this, bars rendered full-output buffers (1280×800 instead
+of 1280×42 — 38× the pixels). Golden tests lock the correct geometry.
+
+## D17 — mock compositor focus policy (test harness)
+The mock now implements layer-shell keyboard focus semantics: the first
+mapped surface gets focus; a surface whose layer set `exclusive` takes focus
+on map and releases it on destroy. Needed for the Esc-closes-panel e2e test.
+This is harness code, not a compositor claim.
