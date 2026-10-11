@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Throwaway Phase 2 stack-spike tool (step 2.0). See native/spike/README.md.
+[package]
+name = "mock-compositor"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# wayland-server: pure-Rust server backend, no system libwayland at build/run time
+wayland-server = "0.31"
+# wayland-protocols-wlr: generated zwlr_layer_shell_v1 v5 server bindings (MIT)
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }
+# png: encode capture PNGs (benchmark evidence), pure Rust
+png = "0.18"
+# tempfile: anonymous file for the wl_keyboard keymap fd, pure Rust
+tempfile = "3"

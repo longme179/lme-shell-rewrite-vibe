@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Throwaway Phase 2 stack-spike C (step 2.0). See native/spike/README.md.
+[package]
+name = "spike-slint"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+smithay-client-toolkit = "0.21"
+wayland-client = "0.31"
+# slint: declarative UI + software renderer rendering into our wl_shm buffer (candidate C;
+# licensing noted in docs/adr/0001: GPL-3.0-only election would be required if adopted).
+slint = { version = "1.18", default-features = false, features = ["compat-1-18", "renderer-software", "std"] }
+# rustix: poll() on the wayland socket with the slint timer deadline as timeout
+rustix = "1.1"

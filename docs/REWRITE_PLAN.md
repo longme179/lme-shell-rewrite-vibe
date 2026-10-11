@@ -251,3 +251,16 @@ support. Explicit go-ahead required before any of this starts.
 S ≤ a focused day; M = a few days with tests; L = a week+ including parity
 suites. All cloud-executable; real-machine items tracked in a checklist at
 the end of each milestone section.
+
+---
+
+## Addendum (2026-10-11, Phase 2 kickoff): Phase 2 scope redefined
+
+Per the owner's Phase 2 instruction, Phase 2 is now: replace the QML **power
+menu** and **application launcher** with two standalone Rust Wayland
+layer-shell clients (`lme-powermenu`, `lme-launcher`), QML stays default
+fallback. The earlier "Phase 2 = QML reductions" framing is superseded;
+those items remain parked for a later phase. Step 2.0 (stack spike + ADR)
+is complete: see `docs/adr/0001-native-ui-stack.md` (recommendation pending
+owner decision), `docs/REBUILD_SPEC.md`, `STATE.md`, and the spike sources
+under `native/spike/`.

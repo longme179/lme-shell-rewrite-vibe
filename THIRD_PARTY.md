@@ -86,3 +86,38 @@ calculation uses the approximate algorithm from *Almanac for Computers* (1990),
 described in Ed Williams' [Sunrise/Sunset Algorithm](https://edwilliams.org/sunrise_sunset_algorithm.htm).
 The Python implementation is original; it is not an astronomical ephemeris or
 display calibration system.
+
+## Phase 2 native-client attribution
+
+Project license: GPL-3.0-or-later (see README). This section records every
+third-party item adapted, vendored or consulted for the native Phase 2 clients,
+per the Phase 2 rules ("check the license of any third-party code you adapt and log it").
+
+### Adapted code
+
+| What | License | Source | Use |
+|---|---|---|---|
+| Structure of `examples/simple_layer.rs` (layer-shell client skeleton: registry/seat/output states, `KeyboardHandler`, frame-callback flow, `SlotPool` buffer cycle) | MIT | smithay-client-toolkit v0.21.1 (github.com/Smithay/client-toolkit, tag v0.21.1) | Adapted in `native/spike/spike-cpu`, `spike-gpu`, `spike-slint/src/main.rs` (throwaway Phase 2 spikes; the same skeleton will seed `lme-powermenu`/`lme-launcher`) |
+| EGL-on-layer-shell creation pattern (`Display::new` over `RawDisplayHandle::Wayland`, config template, `create_window_surface`, `OpenGl::new_from_function_cstr`) | MIT OR Apache-2.0 (glutin 0.32.3); study of layer-shika (AGPL-3.0-or-later, **read-only, no code copied**) | glutin examples + femtovg `examples/helpers/opengl.rs` (MIT OR Apache-2.0) | `native/spike/spike-gpu/src/main.rs` |
+
+### Vendored assets
+
+| What | License | Source | Use |
+|---|---|---|---|
+| `native/spike/assets/fonts/Roboto-VF.ttf` (variable font, 478 KB) | SIL Open Font License 1.1 (Google Fonts repo `ofl/roboto`) | raw.githubusercontent.com/google/fonts (Apache-2.0-licensed repo; font itself OFL-1.1, permits bundling) | Deterministic Roboto rendering in spike A (cosmic-text) and spike B (femtovg) |
+| `native/protocols/wlr-layer-shell-unstable-v1.xml` (v5, reference copy) | MIT (wlroots/wlr-protocols repo) | gitlab.freedesktop.org/wlroots/wlr-protocols | Documentation/reference only; builds use the copy embedded in the `wayland-protocols-wlr` crate |
+
+### Consulted (read-only, no code reused)
+
+| What | License | Why consulted |
+|---|---|---|
+| niri v25.11 source (niri-wm/niri, tag v25.11) | GPL-3.0-only | Verified layer-shell keyboard-interactivity behavior (exclusive/on-demand focus rules) for docs/adr/0001; no code copied |
+| layer-shika 0.3.1 (Codeberg waydeer/layer-shika) | AGPL-3.0-or-later | Evaluated as Slint+layer-shell integration; rejected (early development, AGPL, near-zero adoption); EGL pattern studied only |
+| cosmic-text 0.19.0, tiny-skia 0.12.0, femtovg 0.27.0, slint 1.18.1, sctk 0.21.1 crate sources | MIT / MIT OR Apache-2.0 / GPL-3.0-only OR Slint licenses (slint) | API verification for the spikes (documented in docs/adr/0001) |
+
+### License decision needed (owner)
+
+Adopting **slint** would require electing its GPL-3.0-only option for the
+combined work (the project is currently GPL-3.0-or-later; electing GPL-3.0
+makes the combined distribution effectively GPL-3.0-only). This is an owner
+decision — see docs/adr/0001 §Licensing.

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Throwaway Phase 2 stack-spike A (step 2.0). See native/spike/README.md.
+[package]
+name = "spike-cpu"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# smithay-client-toolkit: layer-shell + seat + slot-pool client plumbing (default features: xkbcommon, calloop)
+smithay-client-toolkit = "0.21"
+# wayland-client: connection + event queue (used directly)
+wayland-client = "0.31"
+# tiny-skia: CPU 2D rasterizer (rounded translucent rect, fills) — pure Rust
+tiny-skia = "0.12"
+# cosmic-text: font loading + shaping + glyph rasterization (default features are pure Rust: harfrust + swash)
+cosmic-text = "0.19"
+
+[profile.release]
+# defaults kept (no LTO/strip flags) to represent a plain release build
