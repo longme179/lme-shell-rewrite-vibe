@@ -24,9 +24,13 @@ echo "==> deliver $LABEL  (commit $COMMIT, $DATE)"
 fail() { echo "DELIVERY FAILED: $*" >&2; exit 1; }
 
 # ---------- 1. Gates ----------
-echo "==> gates: fmt + clippy + test"
+echo "==> gates: fmt + clippy + build + test"
 cargo fmt --all --check || fail "cargo fmt"
 cargo clippy --workspace --all-targets -- -D warnings || fail "cargo clippy"
+# build every workspace binary first: the golden e2e tests spawn
+# mock-compositor from $CARGO_TARGET_DIR, and cargo may otherwise run the
+# lme-shell tests before the mock-compositor bin target is built.
+cargo build --workspace --locked || fail "cargo build"
 cargo test --workspace --locked || fail "cargo test"
 
 # ---------- 2. Export ----------

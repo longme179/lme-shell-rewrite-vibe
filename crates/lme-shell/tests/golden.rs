@@ -42,7 +42,7 @@ fn find_bin(name: &str) -> PathBuf {
     let path = target_dir().join("debug").join(name);
     assert!(
         path.exists(),
-        "missing {name} at {} — run `cargo test --workspace` so workspace binaries are built",
+        "missing {name} at {} — run `cargo build --workspace` before `cargo test` (the e2e tests spawn workspace binaries)",
         path.display()
     );
     path
