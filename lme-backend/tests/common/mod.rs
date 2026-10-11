@@ -2,6 +2,10 @@
 //! directories, stub tools and locale for the Python backend and the Rust
 //! binary, so their JSON-lines output can be compared field by field.
 
+// Each integration-test binary includes this module but uses a different
+// subset of the helpers, so per-binary dead code is expected, not a defect.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 pub struct Fixture {

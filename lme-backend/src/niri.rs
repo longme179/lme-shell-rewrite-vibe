@@ -109,7 +109,7 @@ pub fn niri_state(runner: &CommandRunner, use_socket: bool) -> Value {
 /// the socket stream plays that role. Only line arrival matters.
 pub struct NiriEventStream {
     reader: Option<std::thread::JoinHandle<()>>,
-    shutdown: std::sync::mpsc::Sender<()>,
+    socket: Option<UnixStream>,
 }
 
 impl NiriEventStream {
@@ -118,11 +118,12 @@ impl NiriEventStream {
         F: Fn() + Send + 'static,
     {
         let path = std::env::var_os("NIRI_SOCKET").map(PathBuf::from)?;
-        let (shutdown, receiver) = std::sync::mpsc::channel::<()>();
+        // Connect once. The duplicated handle lets stop() wake a reader that
+        // is blocked in read(): shutdown(2) is per-socket, so closing the
+        // read side here makes the pending read return EOF immediately.
+        let mut stream = UnixStream::connect(&path).ok()?;
+        let wake = stream.try_clone().ok()?;
         let handle = std::thread::spawn(move || {
-            let Ok(mut stream) = UnixStream::connect(path) else {
-                return;
-            };
             let request = serde_json::json!("EventStream");
             let Ok(payload) = serde_json::to_string(&request) else {
                 return;
@@ -137,9 +138,6 @@ impl NiriEventStream {
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             loop {
-                if receiver.try_recv().is_ok() {
-                    return;
-                }
                 line.clear();
                 match reader.read_line(&mut line) {
                     Ok(0) | Err(_) => return,
@@ -149,12 +147,16 @@ impl NiriEventStream {
         });
         Some(Self {
             reader: Some(handle),
-            shutdown,
+            socket: Some(wake),
         })
     }
 
     pub fn stop(&mut self) {
-        let _ = self.shutdown.send(());
+        // Wake the blocked read first (per-socket shutdown), then join,
+        // bounded like the Python teardown (terminate, wait, kill).
+        if let Some(socket) = self.socket.take() {
+            let _ = socket.shutdown(std::net::Shutdown::Read);
+        }
         if let Some(handle) = self.reader.take() {
             let _ = handle.join();
         }
