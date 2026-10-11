@@ -209,12 +209,14 @@ impl CpuRenderer {
                     }
                 }
                 cosmic_text::SwashContent::Color => {
+                    // swash color bitmaps are straight-alpha RGBA (e.g.
+                    // emoji); premultiply while blitting.
                     let (iw, ih) = (img.placement.width, img.placement.height);
                     let data = &img.data;
                     for row in 0..ih {
                         for col in 0..iw {
                             let base = ((row * iw + col) * 4) as usize;
-                            let (b, g, r, a) = (
+                            let (r, g, b, a) = (
                                 data.get(base).copied().unwrap_or(0),
                                 data.get(base + 1).copied().unwrap_or(0),
                                 data.get(base + 2).copied().unwrap_or(0),
@@ -223,15 +225,21 @@ impl CpuRenderer {
                             if a == 0 {
                                 continue;
                             }
+                            let (pr, pg, pb) = (
+                                (r as u32 * a as u32 + 127) / 255,
+                                (g as u32 * a as u32 + 127) / 255,
+                                (b as u32 * a as u32 + 127) / 255,
+                            );
                             let (px, py) = (ix + col as i32, iy + row as i32);
                             if !in_clip(px, py, clip) {
                                 continue;
                             }
                             if let Some(idx) = pixel_index(&self.pixmap, px, py) {
-                                // swash color content is premultiplied BGRA
                                 self.pixmap.pixels_mut()[idx] =
-                                    tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, a)
-                                        .expect("valid premult");
+                                    tiny_skia::PremultipliedColorU8::from_rgba(
+                                        pr as u8, pg as u8, pb as u8, a,
+                                    )
+                                    .expect("valid premult");
                             }
                         }
                     }

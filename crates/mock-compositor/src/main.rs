@@ -84,6 +84,10 @@ struct LayerRec {
     height: i32,
     acked: bool,
     interactivity: Option<String>,
+    anchors_top: bool,
+    anchors_bottom: bool,
+    anchors_left: bool,
+    anchors_right: bool,
 }
 
 struct State {
@@ -334,11 +338,21 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                                 return;
                             };
                             layer.acked = false;
-                            if layer.width > 0 && layer.height > 0 {
-                                (layer.width, layer.height)
+                            // Per-axis: a 0 dimension derives from the
+                            // output when that axis is anchored on both
+                            // edges (layer-shell convention), else the
+                            // requested size or full output as fallback.
+                            let w = if layer.width > 0 {
+                                layer.width
                             } else {
-                                (state.output_w, state.output_h)
-                            }
+                                state.output_w
+                            };
+                            let h = if layer.height > 0 {
+                                layer.height
+                            } else {
+                                state.output_h
+                            };
+                            (w, h)
                         };
                         if let Ok(ls) = LayerSurfaceIface::from_id(dh, lid.clone()) {
                             // NOTE: event arg order per XML is (serial, width, height)
@@ -378,12 +392,36 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                         ),
                     );
                     state.schedule_keys();
-                    // keyboard enter
-                    let kb = state.keyboard.clone();
-                    if let Some(kb) = kb {
-                        let serial = state.serial();
-                        kb.enter(serial, resource, Vec::new());
-                        state.focus_surface = Some(resource.id().clone());
+                    // Keyboard focus policy: the first mapped surface gets
+                    // focus; afterwards, any surface whose layer requested
+                    // "exclusive" interactivity takes focus when it maps,
+                    // and releases it when destroyed (layer-shell semantics
+                    // approximated for shell testing).
+                    let layer_id = state
+                        .surfaces
+                        .get(&resource.id())
+                        .and_then(|r| r.layer.clone());
+                    let wants_exclusive = layer_id
+                        .as_ref()
+                        .and_then(|lid| state.layers.get(lid))
+                        .map(|l| l.interactivity.as_deref() == Some("exclusive"))
+                        .unwrap_or(false);
+                    let take_focus = state.focus_surface.is_none() || wants_exclusive;
+                    if take_focus {
+                        let kb = state.keyboard.clone();
+                        if let Some(kb) = kb {
+                            if let Some(old) = state.focus_surface.clone() {
+                                if old != resource.id() {
+                                    if let Ok(sf) = wl_surface::WlSurface::from_id(dh, old) {
+                                        let serial = state.serial();
+                                        kb.leave(serial, &sf);
+                                    }
+                                }
+                            }
+                            let serial = state.serial();
+                            kb.enter(serial, resource, Vec::new());
+                            state.focus_surface = Some(resource.id().clone());
+                        }
                     }
                 }
 
@@ -662,6 +700,10 @@ impl Dispatch<LayerShellIface, ()> for State {
                     height: 0,
                     acked: false,
                     interactivity: None,
+                    anchors_top: false,
+                    anchors_bottom: false,
+                    anchors_left: false,
+                    anchors_right: false,
                 },
             );
             if let Some(rec) = state.surfaces.get_mut(&surface.id()) {
@@ -679,7 +721,7 @@ impl Dispatch<LayerSurfaceIface, ()> for State {
         resource: &LayerSurfaceIface,
         request: zwlr_layer_surface_v1::Request,
         _data: &(),
-        _dh: &DisplayHandle,
+        dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, State>,
     ) {
         match request {
@@ -688,6 +730,17 @@ impl Dispatch<LayerSurfaceIface, ()> for State {
                 if let Some(layer) = state.layers.get_mut(&resource.id()) {
                     layer.width = width as i32;
                     layer.height = height as i32;
+                }
+            }
+            zwlr_layer_surface_v1::Request::SetAnchor { anchor } => {
+                if let Some(layer) = state.layers.get_mut(&resource.id()) {
+                    use zwlr_layer_surface_v1::Anchor as A;
+                    if let wayland_server::WEnum::Value(bits) = anchor {
+                        layer.anchors_top = bits.contains(A::Top);
+                        layer.anchors_bottom = bits.contains(A::Bottom);
+                        layer.anchors_left = bits.contains(A::Left);
+                        layer.anchors_right = bits.contains(A::Right);
+                    }
                 }
             }
             zwlr_layer_surface_v1::Request::SetKeyboardInteractivity {
@@ -722,6 +775,17 @@ impl Dispatch<LayerSurfaceIface, ()> for State {
                 if let Some(layer) = state.layers.remove(&resource.id()) {
                     if let Some(rec) = state.surfaces.get_mut(&layer.surface) {
                         rec.layer = None;
+                    }
+                    // focused surface going away: release keyboard focus
+                    if state.focus_surface.as_ref() == Some(&layer.surface) {
+                        if let (Some(kb), Ok(sf)) = (
+                            state.keyboard.clone(),
+                            wl_surface::WlSurface::from_id(dh, layer.surface.clone()),
+                        ) {
+                            let serial = state.serial();
+                            kb.leave(serial, &sf);
+                        }
+                        state.focus_surface = None;
                     }
                 }
             }
@@ -780,6 +844,33 @@ fn usage() {
     );
 }
 
+/// Key names → keycodes (matching the vendored minimal keymap and the
+/// existing scripted sequence).
+fn key_code_for(name: &str) -> Option<u32> {
+    Some(match name {
+        "esc" => 1,
+        "enter" | "return" => 28,
+        "backspace" => 14,
+        "tab" => 15,
+        "up" => 103,
+        "down" => 108,
+        "left" => 105,
+        "right" => 106,
+        "space" => 57,
+        one if one.len() == 1 && one.as_bytes()[0].is_ascii_lowercase() => {
+            // evdev KEY_<letter>
+            KEY_LETTERS[(one.as_bytes()[0] - b'a') as usize]
+        }
+        _ => return None,
+    })
+}
+
+/// evdev codes for a..z (KEY_A=30 … KEY_Z=44, in evdev's alphabetical order).
+const KEY_LETTERS: [u32; 26] = [
+    30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45,
+    21, 44,
+];
+
 fn main() {
     let mut mode = Mode::Animate;
     let mut duration = 10.0f64;
@@ -789,6 +880,7 @@ fn main() {
     let mut socket_name = "lme-mock-0".to_string();
     let mut output = (1920i32, 1080i32);
 
+    let mut key_events: Vec<(u64, u32)> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -800,6 +892,21 @@ fn main() {
             }
             "--capture-out" => capture_path = args.next().or(capture_path),
             "--socket" => socket_name = args.next().unwrap_or(socket_name),
+            "--key-events" => {
+                // "esc@2500,down@3000,enter@3500" — inject named keys at
+                // millisecond offsets from start (name@ms pairs).
+                let spec = args.next().unwrap_or_default();
+                for pair in spec.split(',') {
+                    let mut it = pair.trim().split('@');
+                    let name = it.next().unwrap_or("").trim();
+                    let ms: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(500);
+                    if let Some(code) = key_code_for(name) {
+                        key_events.push((ms, code));
+                    } else {
+                        eprintln!("unknown key name: {name}");
+                    }
+                }
+            }
             "--output" => {
                 if let Some(v) = args.next() {
                     if let Some((w, h)) = v.split_once('x') {
@@ -834,6 +941,20 @@ fn main() {
 
     // Bind relative to XDG_RUNTIME_DIR when set (the normal case); otherwise bind an
     // absolute path in the fallback dir so the mock works in bare environments.
+    let mut scheduled: VecDeque<(Duration, u32, wl_keyboard::KeyState)> = VecDeque::new();
+    for (ms, code) in key_events {
+        scheduled.push_back((
+            Duration::from_millis(ms),
+            code,
+            wl_keyboard::KeyState::Pressed,
+        ));
+        scheduled.push_back((
+            Duration::from_millis(ms + 45),
+            code,
+            wl_keyboard::KeyState::Released,
+        ));
+    }
+
     let listen_socket = if std::env::var_os("XDG_RUNTIME_DIR").is_some() {
         ListeningSocket::bind(&socket_name).expect("bind socket")
     } else {
@@ -860,7 +981,7 @@ fn main() {
         keyboard: None,
         focus_surface: None,
         pending_frames: Vec::new(),
-        key_script: VecDeque::new(),
+        key_script: scheduled,
         keys_done_at: None,
         capture_commit,
         capture_path,

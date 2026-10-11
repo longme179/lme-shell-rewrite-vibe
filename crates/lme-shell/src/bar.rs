@@ -89,7 +89,8 @@ pub fn create_bar(
         // (top, right, bottom, left)
         anchor: (!theme.bar_bottom, true, theme.bar_bottom, true),
         exclusive_zone: theme.bar_height as i32,
-        size: None,
+        // width 0 = "derive from output" (anchored both horizontal edges)
+        size: Some((0, theme.bar_height as u32)),
         keyboard: KeyboardInteractivity::None,
         margins: (
             if theme.bar_bottom {

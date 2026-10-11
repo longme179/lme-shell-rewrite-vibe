@@ -468,8 +468,12 @@ impl UiState {
 
     fn render_pass(&mut self) {
         let now = Instant::now();
+        // `was_active` matters: when the LAST tween completes during this
+        // tick, tick() returns false — but the shell still needs its tick to
+        // clear windows' animating flags, otherwise they loop forever.
+        let was_active = self.anims.active();
         let animating = self.anims.tick(now);
-        if animating {
+        if was_active || animating {
             self.with_shell(|shell, state| shell.tick(state));
             let ids: Vec<u64> = self.windows.keys().copied().collect();
             for id in ids {
@@ -503,6 +507,8 @@ impl UiState {
 
     #[allow(clippy::needless_return)]
     fn render_window(&mut self, id: u64) {
+        let perf = perf_enabled();
+        let t0 = perf.then(std::time::Instant::now);
         let (width, height) = match self.windows.get(&id) {
             Some(w) if w.configured => (w.size.0 as i32, w.size.1 as i32),
             _ => return,
@@ -577,6 +583,12 @@ impl UiState {
         }
         w.layer.commit();
         w.needs_render = false;
+        if let (Some(t0), true) = (t0, perf) {
+            eprintln!(
+                "RENDER window={id} ms={:.3}",
+                t0.elapsed().as_secs_f32() * 1000.0
+            );
+        }
         // Widget-queued events from paint (rare) go to the shell.
         let mut q = queue;
         for ev in q.drain(..) {
@@ -1097,6 +1109,13 @@ impl ShmHandler for UiState {
 }
 
 delegate_registry!(UiState);
+
+/// LME_SHELL_PERF=1 logs every render pass duration to stderr (bench only).
+fn perf_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LME_SHELL_PERF").is_some_and(|v| v != "0"))
+}
 
 impl ProvidesRegistryState for UiState {
     fn registry(&mut self) -> &mut RegistryState {
