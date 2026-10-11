@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 "$(dirname "$0")/_log.sh" busctl "$@"
 if [ "$3" = "call" ]; then
-  printf '{"type":"method_return","data":[{"":{"org.bluez.Adapter1":{"Powered":{"type":"b","data":true},"Alias":{"type":"s","data":"hci0"}}},"/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF":{"org.bluez.Device1":{"Alias":{"type":"s","data":"Headphones"},"Paired":{"type":"b","data":true},"Connected":{"type":"b","data":true}}}}]}\n'
+  printf '%s\n' '{"type":"method_return","data":[{"\/org\/bluez\/hci0":{"org.bluez.Adapter1":{"Powered":{"type":"b","data":true},"Alias":{"type":"s","data":"Laptop Bluetooth"}}},"\/org\/bluez\/hci0\/dev_AA_BB_CC_DD_EE_FF":{"org.bluez.Device1":{"Alias":{"type":"s","data":"Headphones"},"Paired":{"type":"b","data":true},"Connected":{"type":"b","data":true}}},"\/org\/bluez\/hci0\/dev_11_22_33_44_55_66":{"org.bluez.Device1":{"Alias":{"type":"s","data":"Unpaired Phone"},"Paired":{"type":"b","data":false},"Connected":{"type":"b","data":false}}}}]}'
 elif [ "$3" = "get-property" ]; then printf 's "balanced"\n'; fi
 exit 0

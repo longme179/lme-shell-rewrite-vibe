@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 "$(dirname "$0")/_log.sh" brightnessctl "$@"
-if [ "$1" = "--class=backlight" ] && [ "$2" = "-m" ]; then printf 'amd_backlight,acpi_video0,45,19712,43807,1\n'; fi
+if [ "$1" = "--class=backlight" ] && [ "$2" = "-m" ]; then printf '%s\n' 'amd_backlight,backlight,19712,43807,45%,1'; fi
 exit 0

@@ -1,0 +1,91 @@
+{
+  "apps": [],
+  "niri": {
+    "available": false,
+    "workspaces": [],
+    "windows": []
+  },
+  "system": {
+    "memoryPercent": null,
+    "memoryUsedGiB": null,
+    "memoryTotalGiB": null,
+    "tempC": null
+  },
+  "weather": {
+    "available": false,
+    "configured": true,
+    "automatic": false,
+    "location": {
+      "name": "Hanoi",
+      "country": "VN",
+      "latitude": 21.03,
+      "longitude": 105.8
+    },
+    "loading": false,
+    "stale": false,
+    "error": "",
+    "search": {
+      "query": "",
+      "loading": false,
+      "results": [],
+      "error": ""
+    },
+    "updatedAt": null
+  },
+  "preferences": {
+    "language": "en",
+    "animations": true,
+    "opacity": 0.85,
+    "accent": "#bd93f9",
+    "wallpaper": "",
+    "terminal": "kitty",
+    "bluetoothAdapter": "",
+    "tasks": [
+      {
+        "id": "a1",
+        "text": "ship parity",
+        "done": false
+      }
+    ],
+    "weatherAutoLocation": false,
+    "weatherLocation": {
+      "name": "Hanoi",
+      "country": "VN",
+      "latitude": 21.03,
+      "longitude": 105.8
+    },
+    "weatherUnit": "celsius",
+    "activityEnabled": true,
+    "clipboardEnabled": true,
+    "clipboardImages": true,
+    "clipboardLimit": 200,
+    "barStyle": "connected",
+    "barFontSize": 14,
+    "barLayout": {
+      "left": [
+        "launcher",
+        "overview",
+        "workspaces"
+      ],
+      "center": [
+        "activity"
+      ],
+      "right": [
+        "clipboard",
+        "tray",
+        "notifications",
+        "audio",
+        "network",
+        "battery",
+        "clock",
+        "settings"
+      ]
+    }
+  },
+  "lastResult": {
+    "ok": true,
+    "action": "ready",
+    "message": "Backend ready",
+    "sequence": 0
+  }
+}

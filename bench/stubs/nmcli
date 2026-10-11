@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 "$(dirname "$0")/_log.sh" nmcli "$@"
 if [ "$1" = "radio" ] && [ "$2" = "wifi" ]; then printf 'enabled\n'
-elif [ "$1" = "-t" ]; then
-  if [ "$4" = "TYPE,STATE,CONNECTION" ]; then printf 'wifi:connected:HomeNet\nethernet:disconnected:\n'
-  elif [ "$4" = "ACTIVE,SSID,SIGNAL" ]; then printf 'yes:HomeNet:88\nno:Guest:45\n' ; fi
+elif [ "$1" = "-t" ] && [ "$2" = "-f" ]; then
+  case "$3" in
+    TYPE,STATE,CONNECTION) printf 'wifi:connected:HomeNet\nethernet:disconnected:\n' ;;
+    ACTIVE,SSID,SIGNAL) printf 'yes:HomeNet:88\nno:Guest:45\n' ;;
+  esac
 fi
 exit 0
