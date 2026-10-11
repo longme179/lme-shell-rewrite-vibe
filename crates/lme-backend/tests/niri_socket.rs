@@ -102,6 +102,7 @@ fn snapshot_with_socket(fixture: &Fixture, socket: Option<&std::path::Path>) -> 
 
 #[test]
 fn socket_state_matches_subprocess_shape() {
+    crate::require_legacy_reference!();
     let mock = MockNiri::spawn("state");
     let fixture = Fixture::new("niri-socket");
     fixture.reset_log();
@@ -141,6 +142,7 @@ fn socket_state_matches_subprocess_shape() {
 
 #[test]
 fn dead_socket_falls_back_to_subprocess() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("niri-fallback");
     let dead = fixture.root.join("no-such.sock");
     fixture.reset_log();
