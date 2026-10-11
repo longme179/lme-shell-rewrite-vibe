@@ -130,6 +130,7 @@ fn interval_validation_matches_python() {
 
 #[test]
 fn snapshot_covers_expected_surface() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("surface");
     let out = capture(&fixture, RUST.as_ref(), &["--once"]);
     let snapshot = first_line(&out);
@@ -206,6 +207,7 @@ fn snapshot_covers_expected_surface() {
 
 #[test]
 fn subprocess_budget_per_snapshot() {
+    crate::require_legacy_reference!();
     let fixture = Fixture::new("budget");
     fixture.reset_log();
     let _ = capture(&fixture, RUST.as_ref(), &["--once"]);
