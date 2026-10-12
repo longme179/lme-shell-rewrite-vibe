@@ -2,19 +2,35 @@
 
 For a fresh agent: read this top to bottom, then `docs/NATIVE_PLAN.md` (the
 coverage table), then `docs/adr/0002-daemon-architecture.md`, then
-`docs/DECISIONS.md`. The one-shot native-rewrite mission (2026-10-11) is the
-operative spec; earlier Phase 2 documents remain as history.
+`docs/DECISIONS.md`. Operative specs: the one-shot native-rewrite mission
+(2026-10-11) + docs/MISSION_CONTINUATION.md (2026-10-12) +
+docs/MISSION_AMENDMENT_2.md (GitHub backup, 2026-10-12). Earlier Phase 2
+documents remain as history.
 
 ## Current step
 
-**Interim delivery TIER-1 SENT** (lme-shell-src-TIER-1-20261011.zip + README +
-summary message via scripts/deliver.sh; commit 6169ddc; export replayed clean:
-release build + debug build + full test suite green in the pruned export;
-secret scan fail-closed clean). Tier 0 done (0.9 fractional-scale
-excepted); Tier 1: 1.1–1.8, 1.10, 1.12, 1.13 done, 1.2 partial (media/
-resources/activity modules have no feed), 1.9 notifications daemon and 1.11
-tray missing. Tiers 2/3 not started (backend-frozen parts only). Tier 4 docs
-done. All statuses live in `docs/NATIVE_PLAN.md`.
+**Session 2026-10-12 (post-reset recovery + TIER-1B in progress).** Sandbox
+was wiped after TIER-1; recovered via Amendment 2 path c (backup repo main →
+ckpt-009/repo.bundle, full mode, branch rewrite/native @ 0ea58fb — exact
+manifest head match, clean tree). gh-sync selftest: first attempt failed auth
+(exit 128, "Invalid username or token") because the token in the first
+Amendment-2 message arrived as the literal placeholder `<GITHUB_TOKEN>`; owner
+re-sent Amendment 2 with the real token → **selftest OK**, full gh-sync pushed
+rewrite/native @ e2fbb57 + wip/rewrite/native to the backup repo. Upstream
+check (ef5281c..56fc7a4): settings openPage must confirm a visible window
+(f4ddf64, recorded as Tier 3.1 requirement in NATIVE_PLAN + UPSTREAM_SYNC);
+README rewrite (docs only). No rebase.
+
+**Now executing the continuation prompt:** Step 0a (mock pointer injection +
+pointer e2e tests) → Step 0b (paced frame callbacks + fps/p99 report) →
+Step 1 Tier 1 finish (1.9 notifications daemon, 1.11 tray, 1.2 MPRIS feed,
+niri actions) → TIER-1B delivery → Tier 2 in the stated order → TIER-2 →
+Tier 3 → TIER-3 → Tier 4 → FINAL. Checkpoints lean; CKPT_FULL=1 only at
+FINAL. gh-sync runs from checkpoint.sh after every checkpoint.
+
+TIER-1 (previous session) was SENT: lme-shell-src-TIER-1-20261011.zip,
+commit 6169ddc, replayed clean. Coverage at delivery: done=34 partial=1
+missing=17 external=2 (docs/NATIVE_PLAN.md is the live table).
 
 ## Done (this session, branch rewrite/native)
 

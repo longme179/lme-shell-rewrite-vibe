@@ -90,7 +90,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 
 | # | Feature | Target module | Test | Status |
 |---|---|---|---|---|
-| 3.1 | Settings window (legacy pages) | — | — | missing (stub prints a notice) |
+| 3.1 | Settings window (legacy pages) | — | — | missing (stub prints a notice; must mirror upstream f4ddf64: openPage IPC reports success only when the window is actually mapped, and callers restart a dead instance) |
 | 3.2 | Idle behavior (ext_idle_notifier_v1) | — | — | missing |
 | 3.3 | Monitors / displays / keybinds (UPSTREAM_SYNC) | — | — | missing |
 | 3.4 | Install script (Fedora 44) | — | — | missing |

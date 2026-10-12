@@ -141,3 +141,27 @@ not a small fix inside crates we own → **listed as a blocker for the
 owner**; the Rust backend remains a faithful implementation of the Phase 0
 frozen contract (which `LME_SHELL_BACKEND=rust` still serves correctly for
 the QML shell's core surface).
+
+## Sync 2026-10-12 (post-recovery check, Amendment 2)
+
+Upstream moved ef5281c → 56fc7a4 (2 commits). `git diff --stat
+ef5281c..origin/main -- qml scripts docs README.md` = 5 files:
+README.md (+517/−204 rewrite), docs/TROUBLESHOOTING.md, docs/VALIDATION.md,
+qml/settings/SettingsApplication.qml, scripts/settings.sh.
+
+- `f4ddf64` Require a visible Settings window before reusing IPC instance:
+  `openPage` IPC now returns `bool` (`window.visible && !window.minimized`);
+  settings.sh only reuses the running instance when the reply is `true`,
+  otherwise kills it and starts a fresh one (Quickshell 0.3.2 can exit 0 on an
+  IPC error). **Impact on the native rewrite:** Tier 3.1 (`lme-shell settings`
+  separate process) must mirror this contract — its `openPage` IPC must only
+  report success when a window is actually mapped, and the launcher fallback
+  must restart a dead/unresponsive instance. Recorded as a Tier 3.1
+  requirement in NATIVE_PLAN.md. No rebase performed (per Amendment 2);
+  behavior read via `git show origin/main:<path>`.
+- `56fc7a4` README rewrite (Fedora step-by-step): documentation only; informs
+  the Tier 4 README tone/structure (step-by-step install + command
+  explanations). No code impact.
+
+No other upstream changes since the Step U sync. The 4 ignored lme-backend
+goldens (upstream feature wave) are unchanged — owner decision still pending.
