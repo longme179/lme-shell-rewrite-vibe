@@ -38,8 +38,21 @@ fn target_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("target"))
 }
 
+/// Profile directory of the CURRENT test run: the test binary itself is
+/// compiled with the same profile as `cargo test` chose, so debug_assertions
+/// tells us whether the workspace binaries/examples we spawn live in
+/// `debug/` or `release/` (Amendment 4: the delivery replay runs
+/// `cargo test --release --locked`, which builds everything into release/).
+fn profile_dir() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
 fn find_bin(name: &str) -> PathBuf {
-    let path = target_dir().join("debug").join(name);
+    let path = target_dir().join(profile_dir()).join(name);
     assert!(
         path.exists(),
         "missing {name} at {} — run `cargo build --workspace` before `cargo test` (the e2e tests spawn workspace binaries)",
@@ -1224,13 +1237,18 @@ fn tray_sni_lifecycle() {
 
     // the fake item: register → bar button → tray panel
     let sni_log = bus_tmp.join("sni.log");
-    let mut sni = Command::new(target_dir().join("debug").join("examples").join("fake_sni"))
-        .arg(&sni_log)
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn fake_sni");
+    let mut sni = Command::new(
+        target_dir()
+            .join(profile_dir())
+            .join("examples")
+            .join("fake_sni"),
+    )
+    .arg(&sni_log)
+    .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn fake_sni");
     assert!(
         sni_wait_log(&sni_log, "registered", Duration::from_secs(15)),
         "fake_sni must register with the watcher"
@@ -1356,7 +1374,7 @@ fn mpris_media_module() {
     let mpris_log = bus_tmp.join("mpris.log");
     let mut player = Command::new(
         target_dir()
-            .join("debug")
+            .join(profile_dir())
             .join("examples")
             .join("fake_mpris"),
     )

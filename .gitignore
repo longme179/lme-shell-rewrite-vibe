@@ -11,3 +11,4 @@ build/
 
 # Rust build artifacts (added in Phase 2)
 target/
+.deliver-state/
