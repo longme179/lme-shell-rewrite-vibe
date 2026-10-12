@@ -115,7 +115,10 @@ impl Drop for Harness {
         kill_group(&mut self.compositor);
         // best-effort cleanup: stale tmp dirs accumulated across runs
         // (560 at the Amendment-5 audit); remove our own to stop the growth.
-        let _ = std::fs::remove_dir_all(&self.tmp);
+        // LME_E2E_KEEP_TMP=1 keeps them for post-mortem debugging.
+        if std::env::var_os("LME_E2E_KEEP_TMP").is_none() {
+            let _ = std::fs::remove_dir_all(&self.tmp);
+        }
     }
 }
 
@@ -433,6 +436,9 @@ fn spawn_harness_full(
     }
     if let Some(addr) = dbus_addr {
         dcmd.env("DBUS_SESSION_BUS_ADDRESS", addr);
+        // Tier 2.3: busctl --system (the BlueZ probe) honors this env, so
+        // the same private bus serves as the fake system bus.
+        dcmd.env("DBUS_SYSTEM_BUS_ADDRESS", addr);
     }
     dcmd.stdout(Stdio::null())
         .stderr(std::fs::File::create(tmp.join("shell.log")).unwrap())
@@ -1531,6 +1537,113 @@ fn control_center_opens_and_matches_golden() {
     assert!(
         !status.contains("control"),
         "control center must close on toggle: {status}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.3: BlueZ tile — a fake org.bluez on the private bus (also serving
+// as the fake SYSTEM bus via DBUS_SYSTEM_BUS_ADDRESS) feeds the probe; the
+// tile click runs the dry-run power toggle; killing the fake degrades to
+// "No adapter" without a panic (service-missing case, Amendment 4 lesson d).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_bluetooth_tile_toggles() {
+    let bus_tmp = std::env::temp_dir().join(format!(
+        "bt-bus-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&bus_tmp).unwrap();
+    let bus = spawn_private_bus(&bus_tmp);
+    let bt_log = bus_tmp.join("bluez.log");
+    let mut bluez = ChildGuard(
+        Command::new(
+            target_dir()
+                .join(profile_dir())
+                .join("examples")
+                .join("fake_bluez"),
+        )
+        .arg(&bt_log)
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .process_group(0)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn fake_bluez"),
+    );
+    // fake ready on the bus
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&bt_log) {
+            if text.contains("ready") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let harness = spawn_harness_full(
+        "ctrl-bt",
+        "1280x800",
+        None,
+        None,
+        // bluetooth tile center in window coords (unit-locked layout); the
+        // late no-op motion keeps the mock alive past the service-missing
+        // check (the run ends 3 s after the LAST scripted event)
+        Some("motion:1115,276@1500;click@1600;motion:5,5@9000"),
+        false,
+        None,
+        &[],
+        Some(&bus.address),
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    // the probe must have queried the fake ObjectManager
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut probed = false;
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&bt_log) {
+            if text.contains("get_managed_objects") {
+                probed = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(probed, "daemon never probed org.bluez (fake log empty)");
+
+    // tile click -> dry-run power OFF (fake reports Powered=true)
+    let shell_log = harness.tmp.join("shell.log");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut toggle_line = String::new();
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&shell_log) {
+            if let Some(found) = text.lines().find(|l| l.contains("dry-run: bluetooth")) {
+                toggle_line = found.to_string();
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        toggle_line.contains("bluetooth power off") && toggle_line.contains("/org/bluez/hci0"),
+        "tile click must run the adapter power-off intent, got: {toggle_line:?}"
+    );
+
+    // service-missing: kill the fake; the next visibility-gated refresh
+    // degrades to "No adapter" and the daemon keeps serving
+    bluez.kill_now();
+    std::thread::sleep(Duration::from_millis(6500));
+    let status = harness.msg(&["status"]);
+    assert!(
+        status.contains("\"version\""),
+        "daemon must survive the bluetooth service going away: {status}"
     );
 }
 

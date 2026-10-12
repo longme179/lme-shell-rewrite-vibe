@@ -152,7 +152,8 @@ impl ControlCenterPanel {
             let mut hbox = HBox::new(5.0);
             for col in 0..3 {
                 let index = row * 3 + col;
-                hbox = hbox.push(tab_button(t, index, self.current_tab));
+                let btn = tab_button(t, index, self.current_tab);
+                hbox = hbox.push(lme_ui::widgets::Fill::new(Box::new(btn)));
             }
             rows = rows.push(hbox);
         }
@@ -319,26 +320,26 @@ fn controls_tab(t: &Theme, d: &ControlData) -> VBox {
     };
     body = body.push(
         HBox::new(12.0)
-            .push(tile(
+            .push(lme_ui::widgets::Fill::new(Box::new(tile(
                 t,
                 ids::TILE_WIFI,
                 "Wi-Fi",
                 &wifi_detail,
                 wifi.enabled,
                 t.cyan,
-            ))
-            .push(tile(
+            ))))
+            .push(lme_ui::widgets::Fill::new(Box::new(tile(
                 t,
                 ids::TILE_BLUETOOTH,
                 "Bluetooth",
                 &bt_detail,
                 bt.enabled,
                 t.purple,
-            )),
+            )))),
     );
     body = body.push(
         HBox::new(12.0)
-            .push(tile(
+            .push(lme_ui::widgets::Fill::new(Box::new(tile(
                 t,
                 ids::TILE_DND,
                 "Do not disturb",
@@ -349,8 +350,8 @@ fn controls_tab(t: &Theme, d: &ControlData) -> VBox {
                 },
                 d.dnd,
                 t.yellow,
-            ))
-            .push(tile(
+            ))))
+            .push(lme_ui::widgets::Fill::new(Box::new(tile(
                 t,
                 ids::TILE_MOTION,
                 "Motion",
@@ -361,7 +362,7 @@ fn controls_tab(t: &Theme, d: &ControlData) -> VBox {
                 },
                 d.animations,
                 t.pink,
-            )),
+            )))),
     );
 
     // sliders card (volume + brightness; mic joins with its feed, Tier 2.2)
@@ -577,6 +578,16 @@ impl Widget for ControlCenterPanel {
         self.content.paint(ctx, out);
     }
     fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        if let InputEvent::Down { pos: p, .. } = ev {
+            if std::env::var_os("LME_PTR_DEBUG").is_some() {
+                let mut ids = Vec::new();
+                self.content.focusables(&mut ids);
+                eprintln!(
+                    "cc-panel: down ({:.0},{:.0}) rect={:?} focusables={ids:#x?}",
+                    p.x, p.y, self.rect
+                );
+            }
+        }
         self.content.deliver(ctx, ev, target)
     }
     fn rect(&self) -> Rect {
@@ -867,6 +878,36 @@ mod tests {
 
     /// Locates the volume slider (window coordinates for the e2e pointer
     /// spec; SlidePanelRight puts the panel at x=1280-600-14, y=10).
+    /// E2E coordinate proof: the full stack (SlidePanelRight wrapper +
+    /// panel laid out in a 1280x800 window) must route a click at the
+    /// recorded bluetooth-tile window coords to TILE_BLUETOOTH.
+    #[test]
+    fn bluetooth_tile_clicks_through_the_wrapper() {
+        use crate::panels::SlidePanelRight;
+        let mut kit = Kit::new();
+        let data = data();
+        let panel = ControlCenterPanel::new(&kit.theme, &data, 0);
+        let mut root = SlidePanelRight::new(Box::new(panel), 600.0, 758.0, 0);
+        let mut c = kit.ctx();
+        root.layout(&mut c, Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let p = Point::new(1115.0, 276.0);
+        let before = kit.queue.len();
+        let mut c = kit.ctx();
+        root.deliver(&mut c, &InputEvent::down(p), None);
+        root.deliver(&mut c, &InputEvent::up(p), None);
+        let events: Vec<String> = kit.queue[before..]
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect();
+        eprintln!("E2E_WRAPPER_EVENTS={events:?}");
+        assert!(
+            kit.queue[before..]
+                .iter()
+                .any(|e| matches!(e, UiEvent::Click(id) if *id == ids::TILE_BLUETOOTH)),
+            "click at (1115,276) must hit the bluetooth tile, got {events:?}"
+        );
+    }
+
     #[test]
     fn volume_slider_position_is_stable() {
         let mut kit = Kit::new();
@@ -902,5 +943,32 @@ mod tests {
             "volume slider moved: ({x},{y}) — update the e2e pointer spec"
         );
         eprintln!("E2E_SLIDER_PANEL_POS={x},{y}");
+        // also locate the Bluetooth tile center (e2e toggle-click coords)
+        let mut tile: Option<(f32, f32)> = None;
+        let mut yy = 4.0;
+        while yy < 736.0 && tile.is_none() {
+            let mut xx = PANEL_W / 2.0;
+            while xx < PANEL_W - 4.0 {
+                let p = Point::new(xx, yy);
+                let before = kit.queue.len();
+                let mut c = kit.ctx();
+                panel.deliver(&mut c, &InputEvent::down(p), None);
+                panel.deliver(&mut c, &InputEvent::up(p), None);
+                if kit.queue[before..]
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::Click(id) if *id == ids::TILE_BLUETOOTH))
+                {
+                    tile = Some((xx, yy + 28.0)); // center of the 56px tile
+                    break;
+                }
+                xx += 2.0;
+            }
+            yy += 2.0;
+        }
+        let Some((tx, ty)) = tile else {
+            panic!("bluetooth tile never hit by the scan")
+        };
+        eprintln!("E2E_BT_TILE_PANEL_POS={tx},{ty}");
+        assert!(ty < 400.0, "bluetooth tile moved: ({tx},{ty})");
     }
 }

@@ -497,6 +497,50 @@ impl Widget for VBox {
     }
 }
 
+/// Wraps a child so it FILLS the available main-axis space in a box
+/// (legacy `Layout.fillWidth`; boxes distribute extra width by grow()).
+pub struct Fill {
+    pub child: Box<dyn Widget>,
+    rect: Rect,
+}
+
+impl Fill {
+    pub fn new(child: Box<dyn Widget>) -> Self {
+        Self {
+            child,
+            rect: Rect::default(),
+        }
+    }
+}
+
+impl Widget for Fill {
+    fn measure(&mut self, ctx: &mut Ctx) -> Size {
+        self.child.measure(ctx)
+    }
+    fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
+        self.rect = bounds;
+        self.child.layout(ctx, bounds);
+    }
+    fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<DrawCmd>) {
+        self.child.paint(ctx, out);
+    }
+    fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        self.child.deliver(ctx, ev, target)
+    }
+    fn rect(&self) -> Rect {
+        self.rect
+    }
+    fn focusables(&self, out: &mut Vec<u64>) {
+        self.child.focusables(out);
+    }
+    fn grow(&self) -> f32 {
+        1.0
+    }
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 /// Fixed-size spacer / flexible filler.
 pub struct Spacer {
     pub w: f32,

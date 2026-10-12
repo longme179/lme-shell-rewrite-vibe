@@ -76,7 +76,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 |---|---|---|---|---|
 | 2.1 | Control center tabs | control_center.rs | unit + e2e golden + VLM | done (Controls tab; others placeholder'd; overflow KI-3) |
 | 2.2 | Audio/brightness actions | daemon ControlActions | e2e control_volume_slider_flushes_action | done (volume/mute/brightness via wpctl/brightnessctl, 100 ms debounce, optimistic snapshot) |
-| 2.3 | Bluetooth (BlueZ) | — | — | missing (external tools for pairing) |
+| 2.3 | Bluetooth (BlueZ) | daemon probe_bluetooth + ControlActions | e2e control_bluetooth_tile_toggles (fake org.bluez + service-missing) | done (state tile + power toggle; pairing UI external) |
 | 2.4 | Wi-Fi (NetworkManager) | — | — | missing (external: nm-connection-editor) |
 | 2.5 | Power profiles / idle inhibit / night light | — | — | missing |
 | 2.6 | Weather UI | — | — | missing (backend client done in Phase 1) |

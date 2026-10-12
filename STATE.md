@@ -80,10 +80,20 @@ optimistic snapshot updates keep bar+panel live, mute button wired.
 e2e control_volume_slider_flushes_action (click at the VLM/unit-locked
 slider coords -> dry-run line + OSD). 24 e2e green, clippy clean.
 
-**Next: Tier 2.3 BlueZ, 2.4 NetworkManager -> TIER-2A delivery (zip +
-README + summary via webhook). Fake D-Bus service + private-bus e2e +
-golden per module (tray/MPRIS method); inspect goldens with the
-image-viewing skill before each delivery.**
+**Tier 2.3 BlueZ DONE**: probe_bluetooth rides the visibility-gated 5 s
+refresh (busctl GetManagedObjects via the frozen backend probe; zero idle
+cost — PERF register), TILE_BLUETOOTH toggles adapter power (set_bluetooth
+argv, dry-run logged, optimistic flip), examples/fake_bluez on the private
+bus doubles as the fake SYSTEM bus (DBUS_SYSTEM_BUS_ADDRESS; busctl honors
+it — verified), e2e covers probe + toggle + the service-missing degrade.
+Also fixed en route: control-center tabs/tiles now FILL their grid cells
+(new lme-ui Fill wrapper — they were label-width before; found because the
+e2e tile click missed) and the mock's scripted-event grace exit (3 s after
+the LAST event) is documented in the e2e (late no-op motion keeps the run
+alive). 156 passed + 4 ignored, 25 e2e green.
+
+**Next: Tier 2.4 NetworkManager -> TIER-2A delivery (zip + README +
+summary via webhook).**
 
 Previous session (Amendment 4: robustness + registry + D25):
 

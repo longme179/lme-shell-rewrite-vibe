@@ -759,7 +759,32 @@ impl Shell {
             }
             cc::TILE_WIFI => self.show_osd(state, "Wi-Fi settings land with Tier 2.4", -1.0),
             cc::TILE_BLUETOOTH => {
-                self.show_osd(state, "Bluetooth controls land with Tier 2.3", -1.0)
+                // Tier 2.3: probe-driven state; toggle runs the action
+                let bt = self
+                    .system_snapshot
+                    .get("bluetooth")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let available = bt
+                    .get("available")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !available {
+                    self.show_osd(state, "No Bluetooth adapter is available", -1.0);
+                } else {
+                    let enabled = bt.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+                    let adapter = bt
+                        .get("adapter")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    self.actions.bluetooth_power(!enabled, &adapter);
+                    // optimistic flip (legacy perform_demo semantics)
+                    if let Some(b) = self.system_snapshot.get_mut("bluetooth") {
+                        b["enabled"] = Value::from(!enabled);
+                    }
+                    self.refresh_control_center(state);
+                }
             }
             cc::VOL_MUTE => {
                 // Tier 2.2: wpctl mute toggle + optimistic snapshot flip
@@ -883,6 +908,23 @@ impl Shell {
         self.start_reveal(state, id);
     }
 
+    /// Tier 2.3: BlueZ adapter state for the control-center tile. Probed
+    /// ONLY while the panel is open (rides the visibility-gated 5 s
+    /// refresh; one busctl subprocess — PERF register). Without org.bluez
+    /// on the bus this fails gracefully to "No adapter" (the e2e
+    /// service-missing case).
+    fn probe_bluetooth(&mut self) {
+        let preferred = self
+            .settings
+            .values
+            .get("bluetoothAdapter")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let state = self.system_probes.bluetooth(&preferred);
+        self.system_snapshot.insert("bluetooth".to_string(), state);
+    }
+
     fn open_control_center(&mut self, state: &mut UiState) {
         let output = state.focused_output();
         let (out_w, out_h) = output
@@ -899,6 +941,7 @@ impl Shell {
         // legacy scrim for side panels (0.13, vs 0.40 for centered ones)
         spec.background = lme_ui::Color::rgba(0.0, 0.0, 0.0, 0.13);
         let id = state.create_window(spec);
+        self.probe_bluetooth();
         let data = crate::control_center::control_data(self);
         let panel =
             crate::control_center::ControlCenterPanel::new(&self.theme, &data, self.control_tab);
@@ -916,6 +959,7 @@ impl Shell {
     /// so no idle cost).
     pub fn refresh_control_center(&mut self, state: &mut UiState) {
         let Some(id) = self.control else { return };
+        self.probe_bluetooth();
         let data = crate::control_center::control_data(self);
         let tab = self.control_tab;
         let panel = crate::control_center::ControlCenterPanel::new(&self.theme, &data, tab);
@@ -1604,6 +1648,33 @@ impl ControlActions {
                 &format!("{value}%"),
             ],
         );
+    }
+
+    /// Tier 2.3: adapter power via busctl (set_bluetooth argv; falls back
+    /// to bluetoothctl without an adapter path).
+    pub fn bluetooth_power(&self, enabled: bool, adapter: &str) {
+        let state = if enabled { "on" } else { "off" };
+        if adapter.is_empty() {
+            self.run(
+                &format!("bluetooth power {state}"),
+                &["bluetoothctl", "--timeout", "10", "power", state],
+            );
+        } else {
+            self.run(
+                &format!("bluetooth power {state} ({adapter})"),
+                &[
+                    "busctl",
+                    "--system",
+                    "set-property",
+                    "org.bluez",
+                    adapter,
+                    "org.bluez.Adapter1",
+                    "Powered",
+                    "b",
+                    if enabled { "true" } else { "false" },
+                ],
+            );
+        }
     }
 }
 
