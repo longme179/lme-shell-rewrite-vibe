@@ -61,6 +61,12 @@ pub enum UiEvent {
     Submit(u64, String),
     /// A widget requested keyboard focus (text inputs on click).
     Focus(u64),
+    /// Wheel notches over widget `id` (positive = scroll down). One notch =
+    /// 1.0; accumulated touchpad lines arrive fractionally. Emitted by
+    /// [`WheelRegion`].
+    Wheel(u64, f32),
+    /// The widget wants its surface dismissed (outside-click on a panel).
+    Dismiss,
 }
 
 /// Context passed through measure/layout/paint/input.
@@ -640,6 +646,10 @@ pub struct Button {
     pub label: String,
     pub label_size: f32,
     pub label_weight: u16,
+    /// Optional leading icon glyph (e.g. an emoji) drawn before the label.
+    pub icon: Option<(String, f32)>,
+    /// Color for the icon glyph (defaults to `text_color` when None).
+    pub icon_color: Option<Color>,
     pub fill: Color,
     pub hover_fill: Option<Color>,
     pub text_color: Color,
@@ -651,6 +661,7 @@ pub struct Button {
     pressed: bool,
     rect: Rect,
     shaped: Option<Arc<crate::text::ShapedText>>,
+    shaped_icon: Option<Arc<crate::text::ShapedText>>,
 }
 
 impl Button {
@@ -660,6 +671,8 @@ impl Button {
             label: label.into(),
             label_size: 14.0,
             label_weight: font_weight::MEDIUM,
+            icon: None,
+            icon_color: None,
             fill: Color::rgb(0.2, 0.2, 0.25),
             hover_fill: None,
             text_color: Color::WHITE,
@@ -671,6 +684,7 @@ impl Button {
             pressed: false,
             rect: Rect::default(),
             shaped: None,
+            shaped_icon: None,
         }
     }
     pub fn themed(id: u64, label: impl Into<String>, theme: &Theme) -> Self {
@@ -710,6 +724,11 @@ impl Button {
                     .line(&self.label, self.label_size, self.label_weight),
             );
         }
+        if self.shaped_icon.is_none() {
+            if let Some((glyph, size)) = &self.icon {
+                self.shaped_icon = Some(ctx.fonts.line(glyph, *size, font_weight::NORMAL));
+            }
+        }
     }
 }
 
@@ -717,9 +736,14 @@ impl Widget for Button {
     fn measure(&mut self, ctx: &mut Ctx) -> Size {
         self.ensure_shaped(ctx);
         let s = self.shaped.as_ref().expect("shaped");
+        let icon = self.shaped_icon.as_ref().filter(|_| self.icon.is_some());
+        let icon_w = icon.map(|i| i.width + 10.0).unwrap_or(0.0);
+        let content_h = icon
+            .map(|i| i.height().max(s.height()))
+            .unwrap_or_else(|| s.height());
         Size::new(
-            s.width + (28.0f32).max(self.min_w * 0.2),
-            (s.height() + 16.0).max(self.min_h),
+            s.width + icon_w + (28.0f32).max(self.min_w * 0.2),
+            (content_h + 16.0).max(self.min_h),
         )
     }
     fn layout(&mut self, _ctx: &mut Ctx, bounds: Rect) {
@@ -750,11 +774,20 @@ impl Widget for Button {
         });
         self.ensure_shaped(ctx);
         let s = self.shaped.as_ref().expect("shaped");
+        let icon = self.shaped_icon.as_ref().filter(|_| self.icon.is_some());
+        let icon_w = icon.map(|i| i.width + 10.0).unwrap_or(0.0);
+        let group_w = icon_w + s.width;
+        let x = self.rect.x + (self.rect.w - group_w) / 2.0;
+        if let Some(i) = icon {
+            out.push(DrawCmd::Text {
+                pos: Point::new(x, self.rect.y + (self.rect.h - i.height()) / 2.0),
+                line: Arc::clone(i),
+                color: self.icon_color.unwrap_or(self.text_color),
+                clip: None,
+            });
+        }
         out.push(DrawCmd::Text {
-            pos: Point::new(
-                self.rect.x + (self.rect.w - s.width) / 2.0,
-                self.rect.y + (self.rect.h - s.height()) / 2.0,
-            ),
+            pos: Point::new(x + icon_w, self.rect.y + (self.rect.h - s.height()) / 2.0),
             line: Arc::clone(s),
             color: self.text_color,
             clip: None,
@@ -817,6 +850,58 @@ impl Widget for Button {
     }
     fn id(&self) -> u64 {
         self.id
+    }
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Wraps a child and reports wheel scrolling over the child's rect to the
+/// shell as `UiEvent::Wheel(id, lines)` instead of routing it into the child.
+/// All other events (hover, clicks, keys) pass through untouched. Used by the
+/// bar for "wheel over module" behaviors (workspace focus, volume preview).
+pub struct WheelRegion {
+    pub id: u64,
+    pub child: Box<dyn Widget>,
+    rect: Rect,
+}
+
+impl WheelRegion {
+    pub fn new(id: u64, child: Box<dyn Widget>) -> Self {
+        Self {
+            id,
+            child,
+            rect: Rect::default(),
+        }
+    }
+}
+
+impl Widget for WheelRegion {
+    fn measure(&mut self, ctx: &mut Ctx) -> Size {
+        self.child.measure(ctx)
+    }
+    fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
+        self.rect = bounds;
+        self.child.layout(ctx, bounds);
+    }
+    fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<DrawCmd>) {
+        self.child.paint(ctx, out);
+    }
+    fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        if let InputEvent::Scroll(p, dy) = ev {
+            if self.rect.contains(*p) {
+                ctx.queue.push(UiEvent::Wheel(self.id, *dy));
+                ctx.request_repaint();
+                return true;
+            }
+        }
+        self.child.deliver(ctx, ev, target)
+    }
+    fn rect(&self) -> Rect {
+        self.rect
+    }
+    fn focusables(&self, out: &mut Vec<u64>) {
+        self.child.focusables(out)
     }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
@@ -1716,5 +1801,110 @@ mod tests {
             })
             .unwrap();
         assert_eq!(first, "item 87");
+    }
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+
+    #[test]
+    fn wheel_region_reports_scroll_and_forwards_the_rest() {
+        let mut parts = (
+            Theme::default_with(&crate::theme::Palette::default()),
+            FontBook::new(),
+            Animator::new(),
+            ShadowCache::new(),
+        );
+        let mut region = WheelRegion::new(42, Box::new(Button::new(7, "OK")));
+        let (theme, fonts, anims, shadows) = &mut parts;
+        let mut queue = Vec::new();
+        let mut c = Ctx {
+            theme,
+            fonts,
+            anims,
+            shadows,
+            queue: &mut queue,
+            now: Instant::now(),
+            focused: None,
+            repaint: false,
+        };
+        region.layout(&mut c, Rect::new(100.0, 200.0, 60.0, 30.0));
+
+        // scroll over the region -> Wheel event, consumed
+        let consumed = region.deliver(
+            &mut c,
+            &InputEvent::Scroll(Point::new(130.0, 215.0), 1.0),
+            None,
+        );
+        assert!(consumed);
+        assert!(matches!(c.queue.as_slice(), [UiEvent::Wheel(42, d)] if *d == 1.0));
+        c.queue.clear();
+
+        // scroll outside the region -> forwarded to the child (a Button
+        // ignores scrolls, so not consumed)
+        let consumed = region.deliver(
+            &mut c,
+            &InputEvent::Scroll(Point::new(10.0, 10.0), 1.0),
+            None,
+        );
+        assert!(!consumed);
+        assert!(c.queue.is_empty());
+
+        // clicks pass through to the child button
+        region.deliver(&mut c, &InputEvent::Down(Point::new(130.0, 215.0)), None);
+        region.deliver(&mut c, &InputEvent::Up(Point::new(130.0, 215.0)), None);
+        assert!(matches!(c.queue.as_slice(), [UiEvent::Click(7)]));
+    }
+
+    #[test]
+    fn button_with_icon_is_wider_and_clickable() {
+        let mut parts = (
+            Theme::default_with(&crate::theme::Palette::default()),
+            FontBook::new(),
+            Animator::new(),
+            ShadowCache::new(),
+        );
+        let mut plain = {
+            let mut b = Button::new(1, "64%");
+            b.label_size = 13.0;
+            b
+        };
+        let mut icon = {
+            let mut b = Button::new(2, "64%");
+            b.label_size = 13.0;
+            b.icon = Some(("🔊".to_string(), 16.0));
+            b
+        };
+        let (theme, fonts, anims, shadows) = &mut parts;
+        let mut queue = Vec::new();
+        let mut c = Ctx {
+            theme,
+            fonts,
+            anims,
+            shadows,
+            queue: &mut queue,
+            now: Instant::now(),
+            focused: None,
+            repaint: false,
+        };
+        let plain_w = plain.measure(&mut c).w;
+        let icon_w = icon.measure(&mut c).w;
+        assert!(
+            icon_w > plain_w + 15.0,
+            "icon adds glyph + gap width ({icon_w} vs {plain_w})"
+        );
+        icon.layout(&mut c, Rect::new(0.0, 0.0, icon_w, 30.0));
+        icon.deliver(
+            &mut c,
+            &InputEvent::Down(Point::new(icon_w / 2.0, 15.0)),
+            None,
+        );
+        icon.deliver(
+            &mut c,
+            &InputEvent::Up(Point::new(icon_w / 2.0, 15.0)),
+            None,
+        );
+        assert!(matches!(c.queue.as_slice(), [UiEvent::Click(2)]));
     }
 }

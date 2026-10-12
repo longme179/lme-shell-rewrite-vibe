@@ -93,18 +93,22 @@ impl Widget for CenteredPanel {
         }
     }
     fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
-        // translate pointer coordinates into panel space
-        let inner = self.panel.rect();
-        let translated = match ev {
-            InputEvent::Move(p) => InputEvent::Move(Point::new(p.x - inner.x, p.y - inner.y)),
-            InputEvent::Down(p) => InputEvent::Down(Point::new(p.x - inner.x, p.y - inner.y)),
-            InputEvent::Up(p) => InputEvent::Up(Point::new(p.x - inner.x, p.y - inner.y)),
-            InputEvent::Scroll(p, d) => {
-                InputEvent::Scroll(Point::new(p.x - inner.x, p.y - inner.y), *d)
+        // Children are laid out in SURFACE coordinates (layout() centers the
+        // panel at an offset inside the full-output window), so pointer
+        // coordinates must be forwarded unchanged. The previous version
+        // translated them into panel-local space, which broke hit-testing
+        // for every child whenever the panel sat at a non-zero offset —
+        // i.e. always (both panels are centered). Regression-tested in
+        // tests/panels.rs with a button at a non-zero panel offset.
+        if let InputEvent::Down(p) = ev {
+            if !self.panel.rect().contains(*p) {
+                // Click on the dimmed backdrop: close the panel (legacy
+                // QML tap-outside-to-close).
+                ctx.queue.push(UiEvent::Dismiss);
+                return true;
             }
-            other => other.clone(),
-        };
-        self.panel.deliver(ctx, &translated, target)
+        }
+        self.panel.deliver(ctx, ev, target)
     }
     fn rect(&self) -> Rect {
         self.rect
@@ -323,6 +327,8 @@ pub struct LauncherPanel {
     pub selected: usize,
     pub calculation_error: String,
     pub favorites_only: bool,
+    /// Row under the pointer (surface coordinates), if any.
+    pub hovered: Option<usize>,
     input: TextInput,
     rect: Rect,
 }
@@ -341,6 +347,7 @@ impl LauncherPanel {
             selected: 0,
             calculation_error: String::new(),
             favorites_only: false,
+            hovered: None,
             input,
             rect: Rect::default(),
         }
@@ -550,6 +557,56 @@ impl Widget for LauncherPanel {
                 _ => {}
             }
         }
+        // Pointer over the result list: hover highlight, click to launch,
+        // wheel scrolls the selection (Amendment 3 finding b).
+        match ev {
+            InputEvent::Move(p) => {
+                let hov = self.row_at(*p);
+                if hov != self.hovered {
+                    self.hovered = hov;
+                    ctx.request_repaint();
+                }
+                if hov.is_some() {
+                    return true;
+                }
+            }
+            InputEvent::Down(p) => {
+                // consume the press so the search field doesn't grab focus
+                // when a result row is clicked
+                if self.row_at(*p).is_some() {
+                    return true;
+                }
+            }
+            InputEvent::Up(p) => {
+                if let Some(index) = self.row_at(*p) {
+                    self.selected = index;
+                    self.hovered = Some(index);
+                    ctx.queue.push(UiEvent::Click(ids::LAUNCHER_LIST));
+                    ctx.request_repaint();
+                    return true;
+                }
+            }
+            InputEvent::Scroll(_, dy) => {
+                // one notch = one row (dy is in lines; fractions round away
+                // from zero so half-notches from high-res wheels still move)
+                let delta = if *dy >= 0.0 {
+                    dy.ceil() as i32
+                } else {
+                    dy.floor() as i32
+                };
+                if delta != 0 && self.move_selection(delta) {
+                    ctx.request_repaint();
+                }
+                return true;
+            }
+            InputEvent::Leave => {
+                let was_hovered = self.hovered.take().is_some();
+                if was_hovered {
+                    ctx.request_repaint();
+                }
+            }
+            _ => {}
+        }
         // Everything else goes to the text input.
         let consumed = self
             .input
@@ -575,21 +632,48 @@ impl Widget for LauncherPanel {
 }
 
 impl LauncherPanel {
-    fn paint_list(&mut self, ctx: &mut Ctx, out: &mut Vec<lme_ui::draw::DrawCmd>) {
-        use lme_ui::draw::DrawCmd;
-        let list_area = Rect::new(
+    /// Result-row geometry (single source of truth for paint + hit-test).
+    const ROW_H: f32 = 52.0;
+
+    fn list_area(&self) -> Rect {
+        Rect::new(
             self.rect.x + 16.0,
             self.rect.y + 74.0,
             self.rect.w - 32.0,
             (self.rect.h - 90.0).max(0.0),
-        );
-        let row_h = 52.0f32;
-        let visible = ((list_area.h / row_h).floor() as usize).max(1);
-        let first = if self.selected >= visible {
+        )
+    }
+
+    fn first_visible(&self) -> usize {
+        let visible = ((self.list_area().h / Self::ROW_H).floor() as usize).max(1);
+        if self.selected >= visible {
             self.selected + 1 - visible
         } else {
             0
-        };
+        }
+    }
+
+    /// Result index at surface point `p`, if it lands on a rendered row.
+    fn row_at(&self, p: Point) -> Option<usize> {
+        let area = self.list_area();
+        if !area.contains(p) {
+            return None;
+        }
+        let visible = ((area.h / Self::ROW_H).floor() as usize).max(1);
+        let row = ((p.y - area.y) / Self::ROW_H).floor() as usize;
+        if row >= visible {
+            return None;
+        }
+        let index = self.first_visible() + row;
+        (index < self.results.len()).then_some(index)
+    }
+
+    fn paint_list(&mut self, ctx: &mut Ctx, out: &mut Vec<lme_ui::draw::DrawCmd>) {
+        use lme_ui::draw::DrawCmd;
+        let list_area = self.list_area();
+        let row_h = Self::ROW_H;
+        let visible = ((list_area.h / row_h).floor() as usize).max(1);
+        let first = self.first_visible();
         for i in 0..visible {
             let index = first + i;
             let Some(result) = self.results.get(index) else {
@@ -601,6 +685,15 @@ impl LauncherPanel {
                     rect: Rect::new(list_area.x, y, list_area.w, row_h - 6.0),
                     radius: ctx.theme.small_radius,
                     fill: Some(ctx.theme.primary_container.alpha(0.55)),
+                    border: None,
+                    clip: Some(list_area),
+                });
+            } else if Some(index) == self.hovered {
+                // pointer hover (Amendment 3 finding b)
+                out.push(DrawCmd::RoundedRect {
+                    rect: Rect::new(list_area.x, y, list_area.w, row_h - 6.0),
+                    radius: ctx.theme.small_radius,
+                    fill: Some(ctx.theme.surface.alpha(0.45)),
                     border: None,
                     clip: Some(list_area),
                 });
@@ -724,5 +817,183 @@ impl Widget for OsdPanel {
     }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lme_ui::anim::Animator;
+    use lme_ui::shadow::ShadowCache;
+    use lme_ui::text::FontBook;
+    use lme_ui::theme::{Palette, Theme};
+
+    fn parts() -> (Theme, FontBook, Animator, ShadowCache) {
+        (
+            Theme::default_with(&Palette::default()),
+            FontBook::new(),
+            Animator::new(),
+            ShadowCache::new(),
+        )
+    }
+
+    /// Button id used by the centered-panel regression tests.
+    const TEST_BUTTON: u64 = 0x7101;
+
+    fn centered_with_button() -> CenteredPanel {
+        let theme = Theme::default_with(&Palette::default());
+        let mut b = lme_ui::widgets::Button::new(TEST_BUTTON, "Confirm lock");
+        b.min_h = 58.0;
+        CenteredPanel::new(Box::new(b), 440.0, 430.0, 0)
+    }
+
+    /// Regression (Amendment 3 finding c): events arrive in SURFACE
+    /// coordinates while the panel sits at a non-zero offset inside the
+    /// window. The old code translated events into panel-local space, so
+    /// every click missed. Click at the button's surface-space position.
+    #[test]
+    fn centered_panel_button_clicks_at_nonzero_offset() {
+        let mut p = parts();
+        let mut panel = centered_with_button();
+        let (theme, fonts, anims, shadows) = &mut p;
+        let mut queue = Vec::new();
+        let mut c = Ctx {
+            theme,
+            fonts,
+            anims,
+            shadows,
+            queue: &mut queue,
+            now: std::time::Instant::now(),
+            focused: None,
+            repaint: false,
+        };
+        // full-output window 1280x800 -> panel occupies (420, 185)..(860, 615)
+        panel.layout(&mut c, Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let button_rect = panel.panel.rect();
+        assert!(
+            button_rect.x > 100.0 && button_rect.y > 100.0,
+            "button must sit at a non-zero offset for this regression test (got {button_rect:?})"
+        );
+        let center = Point::new(
+            button_rect.x + button_rect.w / 2.0,
+            button_rect.y + button_rect.h / 2.0,
+        );
+        panel.deliver(&mut c, &InputEvent::Down(center), None);
+        panel.deliver(&mut c, &InputEvent::Up(center), None);
+        assert!(
+            matches!(c.queue.as_slice(), [UiEvent::Click(TEST_BUTTON)]),
+            "click at the button's surface position must hit the button; queue: {:?}",
+            c.queue
+        );
+    }
+
+    /// Outside-click on the backdrop dismisses the panel (finding c).
+    #[test]
+    fn centered_panel_outside_click_dismisses() {
+        let mut p = parts();
+        let mut panel = centered_with_button();
+        let (theme, fonts, anims, shadows) = &mut p;
+        let mut queue = Vec::new();
+        let mut c = Ctx {
+            theme,
+            fonts,
+            anims,
+            shadows,
+            queue: &mut queue,
+            now: std::time::Instant::now(),
+            focused: None,
+            repaint: false,
+        };
+        panel.layout(&mut c, Rect::new(0.0, 0.0, 1280.0, 800.0));
+        // top-left corner: far outside the centered panel
+        let consumed = panel.deliver(&mut c, &InputEvent::Down(Point::new(5.0, 5.0)), None);
+        assert!(consumed);
+        assert!(matches!(c.queue.as_slice(), [UiEvent::Dismiss]));
+    }
+
+    fn launcher_with_results() -> LauncherPanel {
+        let theme = Theme::default_with(&Palette::default());
+        let mut panel = LauncherPanel::new(&theme);
+        panel.results = (0..5)
+            .map(|i| LauncherResult {
+                kind: ResultKind::App {
+                    id: format!("app{i}"),
+                },
+                name: format!("App number {i}"),
+                detail: "Test entry".into(),
+                icon: None,
+                favorite: false,
+            })
+            .collect();
+        panel
+    }
+
+    /// Hover, click and wheel over the launcher list at a non-zero panel
+    /// offset (finding b + the c coordinate fix).
+    #[test]
+    fn launcher_pointer_hover_click_wheel() {
+        let mut p = parts();
+        let mut panel = launcher_with_results();
+        let (theme, fonts, anims, shadows) = &mut p;
+        let mut queue = Vec::new();
+        let mut c = Ctx {
+            theme,
+            fonts,
+            anims,
+            shadows,
+            queue: &mut queue,
+            now: std::time::Instant::now(),
+            focused: None,
+            repaint: false,
+        };
+        // place the launcher panel where the daemon puts it: centered in
+        // 1280x800 -> (380, 120)..(900, 680); list starts at panel y + 74
+        panel.layout(&mut c, Rect::new(380.0, 120.0, 520.0, 560.0));
+
+        // row 1 lives at list y 120+74+52 .. +104; hover it
+        let row1 = Point::new(640.0, 120.0 + 74.0 + 52.0 + 10.0);
+        panel.deliver(&mut c, &InputEvent::Move(row1), None);
+        assert_eq!(panel.hovered, Some(1));
+        c.queue.clear();
+
+        // click row 1 -> activate + selection moves
+        panel.deliver(&mut c, &InputEvent::Down(row1), None);
+        panel.deliver(&mut c, &InputEvent::Up(row1), None);
+        assert_eq!(panel.selected, 1);
+        assert!(matches!(
+            c.queue.as_slice(),
+            [UiEvent::Click(ids::LAUNCHER_LIST)]
+        ));
+        c.queue.clear();
+
+        // wheel down one notch -> selection to row 2; wheel up two -> row 0
+        panel.deliver(
+            &mut c,
+            &InputEvent::Scroll(Point::new(640.0, 300.0), 1.0),
+            None,
+        );
+        assert_eq!(panel.selected, 2);
+        panel.deliver(
+            &mut c,
+            &InputEvent::Scroll(Point::new(640.0, 300.0), -2.0),
+            None,
+        );
+        assert_eq!(panel.selected, 0);
+
+        // half-notch (high-res wheel) still rounds away from zero
+        panel.deliver(
+            &mut c,
+            &InputEvent::Scroll(Point::new(640.0, 300.0), 0.5),
+            None,
+        );
+        assert_eq!(panel.selected, 1);
+
+        // a click below the last row is not a result
+        let below = Point::new(640.0, 120.0 + 74.0 + 52.0 * 5.0 + 20.0);
+        assert_eq!(panel.row_at(below), None);
+
+        // leave clears the hover
+        panel.deliver(&mut c, &InputEvent::Leave, None);
+        assert_eq!(panel.hovered, None);
     }
 }

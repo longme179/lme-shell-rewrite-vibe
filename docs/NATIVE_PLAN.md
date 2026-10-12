@@ -68,6 +68,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 | 1.11 | System tray: StatusNotifier + DBusMenu | — | — | missing (bar tray module renders only with items>0; no watcher implemented) |
 | 1.12 | niri workspaces + window title + overview action | lme-shell/niri.rs | unit + e2e (fake state) | done (event-stream refresh wired; workspace FOCUS click path returns a Tier-2 notice — moveWindow/focus actions need the live socket, real-machine) |
 | 1.13 | Clock ticks on minute boundaries | daemon.rs clock chain | bench | done |
+| 1.14 | Pointer interaction pass (Amendment-3 findings a–e) | lme-ui/wayland+widgets, lme-shell/{bar,panels,daemon} | unit + e2e | partial — (a) bar audio/network/battery become hover+click buttons → control/wifi panel notices; (b) launcher list hover highlight + click-to-launch + wheel; (c) CenteredPanel outside-click dismiss + coordinate-space fix (events were translated to panel-local while children live in surface coords) + non-zero-offset regression test; (d) scroll semantics: notches from value120/120, touchpad px accumulated with threshold, axis_stop resets (old `absolute/120.0` is ~0 for real wheels); mock sends both wheel and px forms; (e) NEW behavior (no legacy equivalent, accepted [ASSUMPTION]): wheel over workspaces focuses up/down, wheel over audio pill = volume ±5% — dry-run OSD only until the audio service exists, documented in README |
 
 ## Tier 2 — control center and services
 

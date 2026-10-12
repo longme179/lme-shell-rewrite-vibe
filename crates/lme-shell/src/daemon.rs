@@ -54,6 +54,12 @@ pub struct Shell {
     pub launcher: Option<u64>,
     pub power_menu: Option<u64>,
     pub osd: Option<(u64, Instant)>,
+    /// Dry-run volume preview shown by the audio-pill wheel (finding e);
+    /// re-seeded from the system snapshot when the preview goes stale.
+    volume_preview: f32,
+    volume_preview_at: Option<Instant>,
+    /// Sub-notch workspace wheel remainder (high-res wheels send ±0.5).
+    ws_wheel_acc: f32,
     pub dry_run: bool,
     pub started: Instant,
 }
@@ -91,6 +97,9 @@ impl Shell {
             launcher: None,
             power_menu: None,
             osd: None,
+            volume_preview: 0.0,
+            volume_preview_at: None,
+            ws_wheel_acc: 0.0,
             dry_run,
             started: Instant::now(),
         }
@@ -261,6 +270,13 @@ impl AppHandler for Shell {
     fn ui_event(&mut self, state: &mut UiState, window_id: u64, ev: UiEvent) {
         match ev {
             UiEvent::Click(id) => self.handle_click(state, window_id, id),
+            UiEvent::Wheel(id, dy) => self.handle_wheel(state, window_id, id, dy),
+            UiEvent::Dismiss => {
+                // outside-click on a panel's backdrop (CenteredPanel)
+                if self.launcher == Some(window_id) || self.power_menu == Some(window_id) {
+                    self.close_panels(state);
+                }
+            }
             UiEvent::Submit(_, _) | UiEvent::Slide(_, _) | UiEvent::Toggle(_, _) => {}
             UiEvent::Focus(_) => {}
         }
@@ -365,8 +381,12 @@ impl Shell {
                     -1.0,
                 );
             }
-            bar::ids::AUDIO | bar::ids::NETWORK | bar::ids::BATTERY => {
+            bar::ids::AUDIO | bar::ids::BATTERY => {
                 self.toggle_panel(state, "control");
+            }
+            bar::ids::NETWORK => {
+                // legacy opens the Wi-Fi panel from the network module
+                self.toggle_panel(state, "wifi");
             }
             bar::ids::TRAY => {
                 self.show_osd(state, "Tray menu is not implemented in this build", -1.0);
@@ -377,6 +397,58 @@ impl Shell {
                     Ok(m) => self.show_osd(state, m, -1.0),
                     Err(e) => self.show_osd(state, e, -1.0),
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// Wheel-over-bar-module behaviors (Amendment 3 finding e — NEW
+    /// behavior, no legacy equivalent):
+    /// - workspaces row: focus the previous/next workspace per notch
+    /// - audio pill: preview volume ±5% per notch, dry-run (no audio service
+    ///   yet — the OSD is the only effect; README documents this)
+    fn handle_wheel(&mut self, state: &mut UiState, window_id: u64, id: u64, dy: f32) {
+        match id {
+            bar::ids::WORKSPACES => {
+                self.ws_wheel_acc += dy;
+                let steps = self.ws_wheel_acc.trunc();
+                self.ws_wheel_acc -= steps;
+                let steps = steps as i32;
+                if steps == 0 {
+                    return;
+                }
+                // which bar (per-output workspace row) was wheeled?
+                let output = self
+                    .bars
+                    .iter()
+                    .find(|(_, w)| **w == window_id)
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_default();
+                let workspaces = self.niri.workspaces_for(&output);
+                let Some(target) = workspace_focus_target(&workspaces, steps) else {
+                    return;
+                };
+                match self.niri.focus_workspace(target) {
+                    Ok(_) => {} // silent on success (no OSD spam while scrolling)
+                    Err(e) => eprintln!("lme-shell: workspace wheel: {e}"),
+                }
+            }
+            bar::ids::AUDIO => {
+                // re-seed the preview when the last wheel is stale
+                let fresh = self
+                    .volume_preview_at
+                    .is_some_and(|at| at.elapsed() < Duration::from_millis(2500));
+                if !fresh {
+                    self.volume_preview = self
+                        .system_snapshot
+                        .get("audio")
+                        .and_then(|v| v.get("volume"))
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0) as f32;
+                }
+                self.volume_preview = (self.volume_preview + 5.0 * dy).clamp(0.0, 100.0);
+                self.volume_preview_at = Some(Instant::now());
+                self.show_osd(state, "Volume (dry-run)", self.volume_preview);
             }
             _ => {}
         }
@@ -1038,4 +1110,64 @@ pub fn schedule_osd_expiry(state: &mut UiState) {
         }
         calloop::timer::TimeoutAction::Drop
     });
+}
+
+/// Workspace to focus after `steps` wheel notches over the workspaces row
+/// (positive = down = next workspace). Pure function so the target math is
+/// unit-testable without a Wayland connection. `workspaces` is the same
+/// per-output, sort-key-ordered list the bar renders.
+pub fn workspace_focus_target(workspaces: &[Value], steps: i32) -> Option<i64> {
+    if workspaces.len() < 2 || steps == 0 {
+        return None;
+    }
+    let focused = workspaces
+        .iter()
+        .position(|ws| {
+            ws.get("is_focused")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .unwrap_or(0);
+    let target = (focused as i32 + steps).clamp(0, workspaces.len() as i32 - 1) as usize;
+    workspaces
+        .get(target)
+        .and_then(|ws| ws.get("id"))
+        .and_then(Value::as_i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspaces() -> Vec<Value> {
+        serde_json::json!([
+            {"id": 1, "idx": 1, "is_focused": true, "output": "mock-1"},
+            {"id": 2, "idx": 2, "is_focused": false, "output": "mock-1"},
+            {"id": 3, "idx": 3, "is_focused": false, "output": "mock-1"}
+        ])
+        .as_array()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn wheel_down_moves_to_next_workspace() {
+        assert_eq!(workspace_focus_target(&workspaces(), 1), Some(2));
+    }
+
+    #[test]
+    fn wheel_up_clamps_at_first() {
+        assert_eq!(workspace_focus_target(&workspaces(), -1), Some(1));
+    }
+
+    #[test]
+    fn wheel_many_clamps_at_last() {
+        assert_eq!(workspace_focus_target(&workspaces(), 9), Some(3));
+    }
+
+    #[test]
+    fn wheel_zero_or_single_workspace_is_none() {
+        assert_eq!(workspace_focus_target(&workspaces(), 0), None);
+        assert_eq!(workspace_focus_target(&workspaces()[..1], 5), None);
+    }
 }

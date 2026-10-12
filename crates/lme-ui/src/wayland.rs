@@ -28,7 +28,9 @@ use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::pointer::{
+    AxisScroll, PointerEvent, PointerEventKind, PointerHandler,
+};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -195,6 +197,9 @@ pub struct UiState {
     pointer_window: Option<u64>,
     pointer_serial: u32,
     pointer: Option<wl_pointer::WlPointer>,
+    /// Sub-threshold vertical touchpad pixels carried between frames
+    /// (see [`axis_lines`]).
+    scroll_acc_v: f64,
     modifiers: (bool, bool), // (shift, ctrl)
     render_queue: Vec<u64>,
     ping: Option<Ping>,
@@ -243,6 +248,7 @@ impl UiState {
             pointer_window: None,
             pointer_serial: 0,
             pointer: None,
+            scroll_acc_v: 0.0,
             modifiers: (false, false),
             render_queue: Vec::new(),
             ping: None,
@@ -1085,16 +1091,19 @@ impl PointerHandler for UiState {
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     if let Some(w) = self.pointer_window {
-                        self.dispatch_pointer(
-                            w,
-                            InputEvent::Scroll(
-                                crate::geom::Point::new(
-                                    event.position.0 as f32,
-                                    event.position.1 as f32,
+                        let dy = axis_lines(vertical, &mut self.scroll_acc_v);
+                        if dy != 0.0 {
+                            self.dispatch_pointer(
+                                w,
+                                InputEvent::Scroll(
+                                    crate::geom::Point::new(
+                                        event.position.0 as f32,
+                                        event.position.1 as f32,
+                                    ),
+                                    dy,
                                 ),
-                                vertical.absolute as f32 / 120.0,
-                            ),
-                        );
+                            );
+                        }
                     }
                 }
             }
@@ -1109,6 +1118,35 @@ impl ShmHandler for UiState {
 }
 
 delegate_registry!(UiState);
+
+/// Convert one axis frame (already merged per-frame by sctk) into vertical
+/// scroll LINES (1.0 = one wheel notch / one list row):
+///
+/// - Wheels announce notches via `value120` (120 = one notch). Real
+///   compositors ALSO co-deliver plain axis pixels for the same notch
+///   (~53 px on mutter), so counting `absolute / 120.0` — the old code —
+///   undercounts every real wheel to ~0.44 lines and high-res wheels to
+///   nothing. `value120` wins whenever it is non-zero.
+/// - Touchpads send plain axis pixels only. These accumulate in `acc` until
+///   they cross `TOUCHPAD_LINE_PX`, then emit whole lines and keep the
+///   remainder.
+/// - `stop` (finger lifted / fling ended) discards the sub-threshold
+///   remainder so slow gestures don't drift across scroll sessions.
+pub const TOUCHPAD_LINE_PX: f64 = 50.0;
+
+pub fn axis_lines(scroll: &AxisScroll, acc: &mut f64) -> f32 {
+    if scroll.value120 != 0 {
+        scroll.value120 as f32 / 120.0
+    } else if scroll.stop {
+        *acc = 0.0;
+        0.0
+    } else {
+        *acc += scroll.absolute;
+        let lines = (*acc / TOUCHPAD_LINE_PX).trunc();
+        *acc -= lines * TOUCHPAD_LINE_PX;
+        lines as f32
+    }
+}
 
 /// LME_SHELL_PERF=1 logs every render pass duration to stderr (bench only).
 fn perf_enabled() -> bool {
@@ -1125,3 +1163,74 @@ impl ProvidesRegistryState for UiState {
 }
 
 smithay_client_toolkit::delegate_dispatch2!(UiState);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scroll(absolute: f64, value120: i32, stop: bool) -> AxisScroll {
+        AxisScroll {
+            absolute,
+            discrete: 0,
+            value120,
+            relative_direction: None,
+            stop,
+        }
+    }
+
+    #[test]
+    fn wheel_counts_notches_from_value120() {
+        // one notch: real compositors send value120=120 AND ~53 px absolute
+        let mut acc = 0.0;
+        assert!((axis_lines(&scroll(53.0, 120, false), &mut acc) - 1.0).abs() < 1e-6);
+        // two notches down in one frame
+        assert!((axis_lines(&scroll(106.0, 240, false), &mut acc) - 2.0).abs() < 1e-6);
+        // half-notch high-res wheel
+        assert!((axis_lines(&scroll(26.5, 60, false), &mut acc) - 0.5).abs() < 1e-6);
+        // up
+        assert!((axis_lines(&scroll(-53.0, -120, false), &mut acc) + 1.0).abs() < 1e-6);
+        assert_eq!(acc, 0.0, "wheel path never touches the accumulator");
+    }
+
+    #[test]
+    fn wheel_absolute_pixels_alone_do_not_count_as_notches() {
+        // the OLD code divided absolute by 120: a real wheel notch (53 px)
+        // counted as 0.44 lines — this is the regression the fix guards
+        let mut acc = 0.0;
+        let old = 53.0f32 / 120.0;
+        let new = axis_lines(&scroll(53.0, 120, false), &mut acc);
+        assert!(new != old && (new - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn touchpad_pixels_accumulate_to_lines() {
+        let mut acc = 0.0;
+        // 25 px twice crosses the 50 px threshold exactly once
+        assert_eq!(axis_lines(&scroll(25.0, 0, false), &mut acc), 0.0);
+        assert_eq!(axis_lines(&scroll(25.0, 0, false), &mut acc), 1.0);
+        assert!((acc - 0.0).abs() < 1e-9);
+        // remainder carries
+        assert_eq!(axis_lines(&scroll(30.0, 0, false), &mut acc), 0.0);
+        assert_eq!(axis_lines(&scroll(30.0, 0, false), &mut acc), 1.0);
+        assert!((acc - 10.0).abs() < 1e-9);
+        // negative works too
+        assert_eq!(axis_lines(&scroll(-45.0, 0, false), &mut acc), 0.0);
+        assert_eq!(axis_lines(&scroll(-45.0, 0, false), &mut acc), -1.0);
+    }
+
+    #[test]
+    fn stop_discards_subthreshold_remainder() {
+        let mut acc = 0.0;
+        // 20 px, then the gesture stops: the remainder must NOT leak into
+        // the next gesture
+        assert_eq!(axis_lines(&scroll(20.0, 0, false), &mut acc), 0.0);
+        assert_eq!(axis_lines(&scroll(0.0, 0, true), &mut acc), 0.0);
+        assert_eq!(acc, 0.0);
+        assert_eq!(axis_lines(&scroll(20.0, 0, false), &mut acc), 0.0);
+        assert_eq!(
+            axis_lines(&scroll(20.0, 0, false), &mut acc),
+            0.0,
+            "20+20 after a stop never reaches the threshold"
+        );
+    }
+}

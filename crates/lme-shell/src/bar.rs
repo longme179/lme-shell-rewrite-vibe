@@ -8,7 +8,9 @@ use lme_ui::color::Color;
 use lme_ui::font_weight;
 use lme_ui::geom::{Rect, Size};
 use lme_ui::wayland::{KeyboardInteractivity, Layer, UiState, WindowSpec};
-use lme_ui::widgets::{font_weight::MEDIUM, Button, HBox, Icon, Label, Spacer, Widget};
+use lme_ui::widgets::{
+    font_weight::MEDIUM, Button, HBox, Icon, Label, Spacer, WheelRegion, Widget,
+};
 use serde_json::Value;
 
 /// Widget ids for bar module interactions (clicks routed through the shell).
@@ -22,6 +24,8 @@ pub mod ids {
     pub const NETWORK: u64 = 0x1006;
     pub const BATTERY: u64 = 0x1007;
     pub const TRAY: u64 = 0x1008;
+    /// Wheel events over the workspaces row (finding e: focus up/down).
+    pub const WORKSPACES: u64 = 0x1009;
     pub const WORKSPACE_BASE: u64 = 0x2000; // + workspace id
 }
 
@@ -283,7 +287,9 @@ fn build_module(
                 b.min_w = w;
                 row = row.push(b);
             }
-            Some(Box::new(row))
+            // NEW behavior (finding e): wheel over the workspace row focuses
+            // the previous/next workspace. Legacy QML has no equivalent.
+            Some(Box::new(WheelRegion::new(ids::WORKSPACES, Box::new(row))))
         }
         "battery" => {
             let battery = shell
@@ -312,13 +318,13 @@ fn build_module(
                 percent.round() as i64
             );
             let icon_color = if percent < 20.0 { theme.red } else { muted };
-            Some(Box::new(
-                HBox::new(6.0)
-                    .push(Spacer::fixed(10.0, 0.0))
-                    .push(Icon::new("🔋", 16.0, icon_color))
-                    .push(Label::styled(caption, size, MEDIUM, text))
-                    .push(Spacer::fixed(10.0, 0.0)),
-            ))
+            Some(Box::new(status_button(
+                shell,
+                ids::BATTERY,
+                "🔋",
+                icon_color,
+                caption,
+            )))
         }
         "network" => {
             let network = shell
@@ -337,13 +343,13 @@ fn build_module(
             } else {
                 "Wi-Fi".to_string()
             };
-            Some(Box::new(
-                HBox::new(6.0)
-                    .push(Spacer::fixed(10.0, 0.0))
-                    .push(Icon::new("📶", 16.0, muted))
-                    .push(Label::styled(caption, size, MEDIUM, text))
-                    .push(Spacer::fixed(10.0, 0.0)),
-            ))
+            Some(Box::new(status_button(
+                shell,
+                ids::NETWORK,
+                "📶",
+                muted,
+                caption,
+            )))
         }
         "audio" => {
             let audio = shell
@@ -369,13 +375,12 @@ fn build_module(
                         .round() as i64
                 )
             };
-            Some(Box::new(
-                HBox::new(6.0)
-                    .push(Spacer::fixed(10.0, 0.0))
-                    .push(Icon::new("🔊", 16.0, muted))
-                    .push(Label::styled(caption, size, MEDIUM, text))
-                    .push(Spacer::fixed(10.0, 0.0)),
-            ))
+            // Hover+click opens the control center notice (finding a);
+            // wheel previews volume ±5%/notch in dry-run (finding e).
+            Some(Box::new(WheelRegion::new(
+                ids::AUDIO,
+                Box::new(status_button(shell, ids::AUDIO, "🔊", muted, caption)),
+            )))
         }
         "resources" => {
             let cpu = shell
@@ -441,6 +446,30 @@ fn action_button(shell: &Shell, id: u64, glyph: &str, _tooltip: &str) -> Box<dyn
     b.min_h = 30.0;
     b.min_w = 30.0;
     Box::new(b)
+}
+
+/// Status-module pill (audio / network / battery): icon + caption that acts
+/// as a hover+click button (finding a). Until the Tier-2 panels exist the
+/// daemon answers the click with an OSD notice naming the panel.
+fn status_button(
+    shell: &Shell,
+    id: u64,
+    glyph: &str,
+    icon_color: Color,
+    caption: String,
+) -> Button {
+    let theme = &shell.theme;
+    let mut b = Button::new(id, caption);
+    b.icon = Some((glyph.to_string(), 16.0));
+    b.icon_color = Some(icon_color);
+    b.label_size = theme.bar_font_size;
+    b.label_weight = MEDIUM;
+    b.fill = Color::rgba(0.0, 0.0, 0.0, 0.0);
+    b.hover_fill = Some(theme.bar_hover);
+    b.text_color = theme.bar_text;
+    b.radius = 15.0;
+    b.min_h = 30.0;
+    b
 }
 
 /// Root: draws the connected pill (islands render transparent groups).

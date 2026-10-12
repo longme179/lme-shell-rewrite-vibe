@@ -105,6 +105,7 @@ struct SurfaceRec {
 
 struct LayerRec {
     surface: ObjectId,
+    namespace: String,
     width: i32,
     height: i32,
     acked: bool,
@@ -445,7 +446,7 @@ impl State {
             .and_then(|id| self.surfaces.get(id))
             .and_then(|r| r.layer.as_ref())
             .and_then(|lid| self.layers.get(lid))
-            .map(|l| format!("surface of layer rank {}", l.layer_rank))
+            .map(|l| format!("layer surface {} (rank {})", l.namespace, l.layer_rank))
             .unwrap_or_else(|| "none".to_string())
     }
 
@@ -1160,6 +1161,7 @@ impl Dispatch<LayerShellIface, ()> for State {
                 ls.id().clone(),
                 LayerRec {
                     surface: surface.id().clone(),
+                    namespace: namespace.to_string(),
                     width: 0,
                     height: 0,
                     acked: false,
@@ -1249,6 +1251,7 @@ impl Dispatch<LayerSurfaceIface, ()> for State {
             }
             zwlr_layer_surface_v1::Request::Destroy => {
                 if let Some(layer) = state.layers.remove(&resource.id()) {
+                    state.slog("LAYER", &format!("destroyed ({})", layer.namespace));
                     if let Some(rec) = state.surfaces.get_mut(&layer.surface) {
                         rec.layer = None;
                     }
@@ -1701,5 +1704,39 @@ mod tests {
             assert!(KEYMAP.contains(sym), "keymap missing {}", sym);
         }
         assert!(KEYMAP.contains("[ p, P ]"), "keymap missing p/P level pair");
+    }
+}
+
+#[cfg(test)]
+mod pointer_spec_tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_script() {
+        let evs = parse_pointer_spec(
+            "motion:640,15@100;click@200;click:r@250;press:m@300;release:m@310;\
+             scroll:0,1@400;scroll:-2,0@450;scrollpx:0,25.5@500;scrollstop@600;leave@700",
+        )
+        .expect("valid script");
+        assert_eq!(evs[0], (100, PtrEv::Motion(640.0, 15.0)));
+        assert_eq!(evs[1], (200, PtrEv::Click(0x110)));
+        assert_eq!(evs[2], (250, PtrEv::Click(0x111))); // r = BTN_RIGHT
+        assert_eq!(evs[3], (300, PtrEv::Press(0x112))); // m = BTN_MIDDLE
+        assert_eq!(evs[4], (310, PtrEv::Release(0x112)));
+        assert_eq!(evs[5], (400, PtrEv::Scroll(0, 1)));
+        assert_eq!(evs[6], (450, PtrEv::Scroll(-2, 0)));
+        assert_eq!(evs[7], (500, PtrEv::ScrollPx(0.0, 25.5)));
+        assert_eq!(evs[8], (600, PtrEv::ScrollStop));
+        assert_eq!(evs[9], (700, PtrEv::Leave));
+        assert_eq!(evs.len(), 10);
+    }
+
+    #[test]
+    fn rejects_bad_scripts() {
+        assert!(parse_pointer_spec("motion:640").is_err()); // missing @ms
+        assert!(parse_pointer_spec("click:x@10").is_err()); // unknown button
+        assert!(parse_pointer_spec("teleport:1,2@10").is_err()); // unknown verb
+        assert!(parse_pointer_spec("scroll:5@10").is_err()); // wants h,v
+        assert!(parse_pointer_spec("motion:abc,2@10").is_err()); // bad coords
     }
 }
