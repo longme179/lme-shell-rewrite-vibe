@@ -9,6 +9,7 @@ mod bar;
 mod daemon;
 mod ipc;
 mod launcher_data;
+mod mpris;
 mod niri;
 mod notifications;
 mod panels;
@@ -102,10 +103,11 @@ fn parse_msg(args: &[String]) -> Result<ipc::Command, String> {
         }
         Some("notifications") => Ok(ipc::Command::Notifications),
         Some("tray") => Ok(ipc::Command::Tray),
+        Some("media") => Ok(ipc::Command::Media),
         Some("power") => args
             .get(1)
             .map(|action| ipc::Command::Power { action: action.clone() })
             .ok_or_else(|| "power needs an action".into()),
-        _ => Err("commands: ping | status | close | refresh | toggle <panel> | osd <label> [value] | notify <summary> [body] | dnd <minutes> | notifications | tray | power <action>".into()),
+        _ => Err("commands: ping | status | close | refresh | toggle <panel> | osd <label> [value] | notify <summary> [body] | dnd <minutes> | notifications | tray | media | power <action>".into()),
     }
 }

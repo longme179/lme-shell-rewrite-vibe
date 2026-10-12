@@ -3,6 +3,8 @@
 //! IPC socket, inotify settings watch, clock timer, battery probe and the
 //! niri event stream are all event sources on it.
 
+use std::path::PathBuf;
+
 use crate::bar;
 use crate::ipc::{self, Command, Reply};
 use crate::launcher_data::{self, EmojiIndex};
@@ -40,7 +42,13 @@ pub struct Shell {
     /// in tests via LME_SHELL_FAKE_STATE, live-probed (sysfs, no subprocess)
     /// otherwise.
     pub system_snapshot: serde_json::Map<String, Value>,
+    /// Live CPU/memory sampler (keeps the last /proc/stat sample for the
+    /// delta math; first read reports cpu: null).
+    pub system_probes: lme_backend::probes::SystemProbes,
     pub media_title: Option<String>,
+    /// MPRIS players (org.mpris.MediaPlayer2.*) — bar media module feed.
+    pub mpris: Vec<crate::mpris::MprisPlayer>,
+    pub mpris_handle: Option<crate::mpris::MprisHandle>,
     pub tray_items: usize,
     /// Tray registry (Tier 1.11) + the open panel window, its menu page
     /// state and the D-Bus manager handle (None without a session bus).
@@ -82,7 +90,12 @@ impl Shell {
         let apps = applications.scan();
         let emoji_path = repo_asset_path("assets/emoji.json");
         let emoji = EmojiIndex::load(&emoji_path);
-        let system_snapshot = probe_system();
+        let mut system_probes = lme_backend::probes::SystemProbes::new(
+            lme_backend::runner::CommandRunner::new(),
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys"),
+        );
+        let system_snapshot = probe_system(&mut system_probes);
         Shell {
             theme,
             settings,
@@ -91,7 +104,10 @@ impl Shell {
             applications,
             emoji,
             system_snapshot,
+            system_probes,
             media_title: None,
+            mpris: Vec::new(),
+            mpris_handle: None,
             tray_items: 0,
             tray: crate::tray::TrayHub::default(),
             tray_handle: None,
@@ -143,7 +159,7 @@ fn repo_asset_path(relative: &str) -> std::path::PathBuf {
 /// Battery from sysfs only (no subprocess): /sys/class/power_supply/*/type ==
 /// Battery → mean capacity + any charging. Everything else stays unavailable
 /// until its Tier 2 service lands (honest placeholders).
-fn probe_system() -> serde_json::Map<String, Value> {
+fn probe_system(probes: &mut lme_backend::probes::SystemProbes) -> serde_json::Map<String, Value> {
     let mut snapshot = serde_json::Map::new();
     if std::env::var_os("LME_SHELL_FAKE_STATE").is_some() {
         if let Ok(text) = std::env::var("LME_SHELL_FAKE_STATE_SYSTEM") {
@@ -152,6 +168,10 @@ fn probe_system() -> serde_json::Map<String, Value> {
             }
         }
         return snapshot;
+    }
+    // CPU/memory deltas (needs two samples: the first is cpu: null)
+    for (k, v) in probes.cpu_memory() {
+        snapshot.insert(k, v);
     }
     let mut percents: Vec<f64> = Vec::new();
     let mut charging = false;
@@ -858,7 +878,7 @@ impl Shell {
             Command::Refresh => {
                 self.rescan_apps();
                 self.niri.refresh();
-                self.system_snapshot = probe_system();
+                self.system_snapshot = probe_system(&mut self.system_probes);
                 self.rebuild_bars(state);
                 Reply::ok(format!("refreshed ({} apps)", self.apps.len()))
             }
@@ -904,6 +924,26 @@ impl Shell {
                 ok: true,
                 message: format!("{} tray items", self.tray.items.len()),
                 detail: Some(self.tray.json()),
+            },
+            Command::Media => Reply {
+                ok: true,
+                message: format!(
+                    "{} player{}",
+                    self.mpris.len(),
+                    if self.mpris.len() == 1 { "" } else { "s" }
+                ),
+                detail: Some(serde_json::json!({
+                    "count": self.mpris.len(),
+                    "title": self.media_title,
+                    "players": self.mpris.iter().map(|p| serde_json::json!({
+                        "bus": p.bus,
+                        "identity": p.identity,
+                        "title": p.track_title,
+                        "artist": p.artist_line(),
+                        "status": p.status,
+                        "playing": p.is_playing(),
+                    })).collect::<Vec<_>>(),
+                })),
             },
             Command::StatusMessage { message } => {
                 self.show_osd(state, message, -1.0);
@@ -1065,6 +1105,31 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
         }
     }
 
+    // ---- MPRIS media feed (Tier 1.2) ----
+    // Non-fatal without a session bus (D4): the media module stays hidden.
+    {
+        let (mtx, mchannel) = calloop::channel::channel::<crate::mpris::MprisEvent>();
+        match crate::mpris::spawn(mtx) {
+            Ok(mhandle) => {
+                crate::daemon::with_shell(&mut state, |shell, _| {
+                    shell.mpris_handle = Some(mhandle);
+                });
+                if let Err(e) = handle.insert_source(mchannel, |event, _, state| {
+                    if let calloop::channel::Event::Msg(ev) = event {
+                        crate::daemon::with_shell(state, |shell, state| {
+                            shell.mpris_event(state, ev);
+                        });
+                    }
+                }) {
+                    eprintln!("lme-shell: mpris channel: {e:?}");
+                }
+            }
+            Err(e) => {
+                eprintln!("lme-shell: mpris: session bus unavailable ({e})");
+            }
+        }
+    }
+
     // ---- settings/palette hot reload (inotify) ----
     {
         use calloop::generic::Generic;
@@ -1158,23 +1223,26 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
         arm(&handle_clock);
     }
 
-    // ---- battery probe: 30 s chain (sysfs only, no subprocess) ----
+    // ---- system probe chain: battery (sysfs) + CPU/RAM (/proc), 5 s ----
+    // (legacy backend sampled on demand with a 1.5 s TTL; a 5 s chain is
+    // fresh enough for the resources pill and costs 0.2 wakeups/s idle,
+    // well inside the ≤1/s budget. CPU% needs two samples — the first
+    // tick reports null and the pill shows 0% until the second.)
     {
-        let handle_battery = handle.clone();
-        let _ = handle_battery;
-        let timer = calloop::timer::Timer::from_duration(Duration::from_secs(30));
+        let handle_system = handle.clone();
+        let _ = handle_system;
+        let timer = calloop::timer::Timer::from_duration(Duration::from_secs(5));
         let _ = handle.insert_source(timer, |_, _, state| {
             crate::daemon::with_shell(state, |shell, state| {
-                shell.system_snapshot = probe_system();
+                shell.system_snapshot = probe_system(&mut shell.system_probes);
                 shell.rebuild_bars(state);
             });
-            // re-arm: chained one-shot, so an idle shell without a battery
-            // still only wakes once per 30 s
-            let timer = calloop::timer::Timer::from_duration(Duration::from_secs(30));
+            // re-arm: chained one-shot, so an idle shell wakes once per 5 s
+            let timer = calloop::timer::Timer::from_duration(Duration::from_secs(5));
             if let Some(handle) = &state.handle {
                 let _ = handle.insert_source(timer, |_, _, state| {
                     crate::daemon::with_shell(state, |shell, state| {
-                        shell.system_snapshot = probe_system();
+                        shell.system_snapshot = probe_system(&mut shell.system_probes);
                         shell.rebuild_bars(state);
                     });
                     calloop::timer::TimeoutAction::Drop

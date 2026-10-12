@@ -45,6 +45,8 @@ pub enum Command {
     Notifications,
     /// tray — registered StatusNotifierItems (Tier 1.11, testing/inspection).
     Tray,
+    /// media — MPRIS players + the chosen bar title (Tier 1.2).
+    Media,
     /// status <message> — status toast (like QML lastResult messages).
     StatusMessage {
         message: String,

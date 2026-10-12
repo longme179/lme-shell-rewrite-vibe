@@ -1307,3 +1307,123 @@ fn tray_sni_lifecycle() {
         "panel must close when the last item goes away"
     );
 }
+
+// ---------------------------------------------------------------------------
+// MPRIS media module e2e (Tier 1.2): a real player (examples/fake_mpris,
+// the legacy mpris_fixture.py port) on the private bus; the bar grows the
+// media pill, PropertiesChanged updates the title, and the player's death
+// removes it.
+// ---------------------------------------------------------------------------
+
+fn mpris_wait_msg(harness: &Harness, tag: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let state = harness.msg(&["media"]);
+        if state.contains(tag) {
+            return true;
+        }
+        if Instant::now() > deadline {
+            eprintln!("--- msg media after timeout: {state}");
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn mpris_media_module() {
+    let png = capture_png("bar-media", 0);
+    let _ = std::fs::remove_file(&png);
+    let bus_tmp = std::env::temp_dir().join(format!(
+        "lme-bus-mpris-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&bus_tmp).unwrap();
+    let bus = spawn_private_bus(&bus_tmp);
+    let harness = spawn_harness_full(
+        "mpris-media",
+        "1280x800",
+        Some((Capture::AtMs(7000), &png)),
+        None,
+        None,
+        false,
+        Some(&["media"]),
+        &[],
+        Some(&bus.address),
+    );
+
+    let mpris_log = bus_tmp.join("mpris.log");
+    let mut player = Command::new(
+        target_dir()
+            .join("debug")
+            .join("examples")
+            .join("fake_mpris"),
+    )
+    .arg(&mpris_log)
+    .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn fake_mpris");
+
+    // the shell tracks the player and picks its title for the bar pill
+    assert!(
+        mpris_wait_msg(&harness, "Native track", Duration::from_secs(15)),
+        "the media feed must track the fake player"
+    );
+    let state = harness.msg(&["media"]);
+    assert!(
+        state.contains("1 player") && state.contains("Test Artist") && state.contains("playing"),
+        "msg media payload: {state}"
+    );
+
+    // the bar rebuilt with the media pill and matches the golden
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(20)),
+        "timed capture never happened"
+    );
+    let image = decode_png(&png);
+    assert!(
+        (image.width, image.height) == (1280, 42),
+        "the captured topmost surface must be the bar, got {}x{}",
+        image.width,
+        image.height
+    );
+    assert_matches_golden(&png, "bar-media.png");
+
+    // PropertiesChanged update path: a real busctl client calls Next, the
+    // player flips its metadata and emits — the shell must follow
+    let out = Command::new("busctl")
+        .arg(format!("--address={}", bus.address))
+        .args([
+            "call",
+            "org.mpris.MediaPlayer2.lmeTest",
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2.Player",
+            "Next",
+        ])
+        .output()
+        .expect("busctl call Next");
+    assert!(out.status.success(), "busctl Next failed");
+    assert!(
+        mpris_wait_msg(&harness, "Next track", Duration::from_secs(15)),
+        "PropertiesChanged must refresh the title"
+    );
+
+    // kill the player: NameOwnerChanged removes it, the pill hides
+    let _ = player.kill();
+    let _ = player.wait();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let state = harness.msg(&["media"]);
+        if state.contains("0 players") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "player must be removed after its bus name dies (state: {state})"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
