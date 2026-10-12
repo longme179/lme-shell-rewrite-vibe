@@ -157,7 +157,20 @@ post-reveal capture (KI-5). 173 passed + 4 ignored; 31 e2e green.
 
 **Next: Tier 2 completion — 2.8 clipboard, 2.9 activity island (MPRIS
 transport), 2.10 workspace board, WifiPanel connection list; then
-TIER-2 delivery.**
+TIER-2 delivery.** The 2.8 scope is analyzed (ClipboardPanel.qml, 166
+lines, read this session): panel over the frozen lme-backend History
+store — bar clipboard button opens it; search field with the 160 ms
+debounce -> History::entries(query, kind); All/Text/Images filter row;
+entry rows (image kind 116 px vs text 92 px; pin ◆/◇, delete ×, copy on
+click); Pause/Resume (History::pause); Clear… with the keep-pins/all
+confirmation overlay; the image preview overlay; the empty state; the
+"↑↓ select / Enter copy / Escape close" hint row. Daemon owns a
+History(history_directory(), clipboardLimit, max_total); probe on panel
+open (visibility-gated); copy = wl-copy dry-run logged; e2e seeds a temp
+history dir before the daemon starts (History::store is deterministic).
+The live wl-paste --watch CAPTURE loop is a separate decision (the
+legacy runs it in the service process) — likely a backend-catch-up
+class item; do NOT embed it without the PERF register treatment.
 
 Previous session (Amendment 4: robustness + registry + D25):
 
