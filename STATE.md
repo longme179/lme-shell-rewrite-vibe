@@ -10,23 +10,22 @@ documents remain as history.
 ## Current step
 
 **Session 2026-10-12 (post-reset recovery + TIER-1B in progress).** Sandbox
-was wiped after TIER-1; recovered via Amendment 2 path c (backup repo main →
-ckpt-009/repo.bundle, full mode, branch rewrite/native @ 0ea58fb — exact
-manifest head match, clean tree). gh-sync selftest: first attempt failed auth
-(exit 128, "Invalid username or token") because the token in the first
-Amendment-2 message arrived as the literal placeholder `<GITHUB_TOKEN>`; owner
-re-sent Amendment 2 with the real token → **selftest OK**, full gh-sync pushed
-rewrite/native @ e2fbb57 + wip/rewrite/native to the backup repo. Upstream
-check (ef5281c..56fc7a4): settings openPage must confirm a visible window
-(f4ddf64, recorded as Tier 3.1 requirement in NATIVE_PLAN + UPSTREAM_SYNC);
-README rewrite (docs only). No rebase.
+survived between chats; branch was at 99bda82 with the Step-0a mock-pointer
+edits half-applied (a multi-edit died mid-way: State/dispatch edits landed,
+main() had not). Per Amendment 3: gh-sync ran FIRST (pushed 99bda82 +
+wip snapshot), then main() was completed (pointer script parsing with ';'
+separator, --capture-at, State init, tick(&dh), SUMMARY with delivered fps /
+late / dropped / pointer_events, seat v8 for axis_value120) and committed.
+Step-0a work items (Amendment 3 findings a–e) follow, then Step 0b (paced
+fps/p99 report), then the continuation-prompt steps.
 
-**Now executing the continuation prompt:** Step 0a (mock pointer injection +
-pointer e2e tests) → Step 0b (paced frame callbacks + fps/p99 report) →
-Step 1 Tier 1 finish (1.9 notifications daemon, 1.11 tray, 1.2 MPRIS feed,
-niri actions) → TIER-1B delivery → Tier 2 in the stated order → TIER-2 →
-Tier 3 → TIER-3 → Tier 4 → FINAL. Checkpoints lean; CKPT_FULL=1 only at
-FINAL. gh-sync runs from checkpoint.sh after every checkpoint.
+**Executing:** Step 0a finish (pointer e2e tests + findings a–e) → Step 0b
+(vsync-paced fps/dropped/p99 report in docs/PERF.md) → Step 1 Tier 1 finish
+(1.9 notifications daemon, 1.11 tray, 1.2 MPRIS feed, niri actions) →
+TIER-1B delivery → Tier 2 in the stated order → TIER-2 → Tier 3 → TIER-3 →
+Tier 4 → FINAL. Checkpoints lean; CKPT_FULL=1 only at FINAL. gh-sync runs
+from checkpoint.sh after every checkpoint AND directly every ~10 min of work
+(Amendment 3 cadence).
 
 TIER-1 (previous session) was SENT: lme-shell-src-TIER-1-20261011.zip,
 commit 6169ddc, replayed clean. Coverage at delivery: done=34 partial=1
@@ -78,9 +77,21 @@ made (mock pacing insufficient) — flagged real-machine.
 - `. scripts/env.sh` for every shell: PATH, CARGO_TARGET_DIR=$HOME/target,
   CARGO_INCREMENTAL=0, pkg-config shims at /home/z/work/pkgconfig-fake
   (wayland/xkbcommon for sctk builds; real Fedora machines don't need them).
+  The shim (handwritten .pc + .so symlinks onto the system .so.0 runtime
+  libs) is NOT committed — see DECISIONS D18.
+- **Sandbox lesson (Amendment 3): run cargo in the FOREGROUND.** Background
+  jobs and children of the parent shell get killed in this sandbox, and the
+  crates.io index update dies when backgrounded. Keep each command under
+  ~5 minutes: `cargo fetch` first, then `cargo build -p <crate>` (workspace
+  release build ~4.5 min — stay foreground, split if needed).
+- Toolchain: `rustup component add clippy rustfmt` needed after a sandbox
+  reset (shims live in ~/.cargo/bin, already on PATH via env.sh).
 - Release build of the workspace: ~4.5 min; disk ~3.0 GB free after.
 - Webhook: `export DISCORD_WEBHOOK_URL="$(cat ~/.lme-webhook)"` (chmod 600,
   outside every repo). Test message HTTP 204 confirmed this session.
+- Backup sync: `scripts/gh-sync.sh` after every group of related edits and
+  before every long build (takes seconds, nothing hits Discord — Amendment 3
+  cadence). checkpoint.sh keeps its own cadence (it runs gh-sync too).
 - Checkpoints: `scripts/checkpoint.sh "<note>"` lean default; CKPT_FULL=1
   final only. `scripts/send-file.sh` for deliveries. `scripts/deliver.sh
   <label>` runs gates + export + replay + scan + zip + send.

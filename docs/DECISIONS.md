@@ -131,3 +131,14 @@ The mock now implements layer-shell keyboard focus semantics: the first
 mapped surface gets focus; a surface whose layer set `exclusive` takes focus
 on map and releases it on destroy. Needed for the Esc-closes-panel e2e test.
 This is harness code, not a compositor claim.
+
+## D18 — pkgconfig-fake shim is sandbox-only, not committed
+This sandbox ships the wayland/xkbcommon *runtime* libs (.so.0) but no
+development package (no .pc files, no .so symlinks), so sctk/wayland crates
+cannot link without help. `/home/z/work/pkgconfig-fake` (handwritten .pc
+files + .so symlinks onto the system .so.0) fixes that and is wired into
+`scripts/env.sh`. It contains no secrets but is machine-specific: real Fedora
+machines get these from dnf packages (README lists them), so the shim is NOT
+committed to the repo and NOT part of REBUILD_SPEC. A future sandbox restore
+must recreate it (env.sh degrades gracefully when absent, builds then require
+the real dev packages).
