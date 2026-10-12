@@ -78,6 +78,9 @@ pub struct Shell {
     pub control_tab: usize,
     /// Hardware actions executor (Tier 2.2; dry-run under --dry-run).
     pub actions: ControlActions,
+    /// Tool runner for stateful toggles (Wi-Fi radio; Tier 2.4). Built
+    /// once (which() scans at construction).
+    pub tool_runner: lme_backend::runner::CommandRunner,
     /// Debounced slider values (legacy pendingVolume/pendingBrightness,
     /// flushed 100 ms after the last move).
     pub pending_volume: Option<i64>,
@@ -143,6 +146,7 @@ impl Shell {
             control: None,
             control_tab: 0,
             actions: ControlActions { dry_run },
+            tool_runner: lme_backend::runner::CommandRunner::new(),
             pending_volume: None,
             pending_brightness: None,
             osd: None,
@@ -757,7 +761,20 @@ impl Shell {
                 self.rebuild_bars(state);
                 self.refresh_control_center(state);
             }
-            cc::TILE_WIFI => self.show_osd(state, "Wi-Fi settings land with Tier 2.4", -1.0),
+            cc::TILE_WIFI => {
+                // Tier 2.4: radio toggle (WifiPanel connection list is the
+                // TIER-2 completion item)
+                self.actions.wifi_toggle(&self.tool_runner);
+                if let Some(net) = self.system_snapshot.get_mut("network") {
+                    let connected = net
+                        .get("connected")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    net["connected"] = Value::from(!connected);
+                }
+                self.rebuild_bars(state);
+                self.refresh_control_center(state);
+            }
             cc::TILE_BLUETOOTH => {
                 // Tier 2.3: probe-driven state; toggle runs the action
                 let bt = self
@@ -1648,6 +1665,30 @@ impl ControlActions {
                 &format!("{value}%"),
             ],
         );
+    }
+
+    /// Tier 2.4: Wi-Fi radio toggle (backend wifiToggle argv shape: read
+    /// `nmcli radio wifi`, set the opposite). Dry-run logs the intent; a
+    /// missing nmcli logs an error (never panics).
+    pub fn wifi_toggle(&self, runner: &lme_backend::runner::CommandRunner) {
+        if self.dry_run {
+            eprintln!("lme-shell: dry-run: wifi radio toggle [nmcli radio wifi ...]");
+            return;
+        }
+        match runner.run("nmcli", &["radio", "wifi"]) {
+            Ok(state) => {
+                let target = if state.trim() == "enabled" {
+                    "off"
+                } else {
+                    "on"
+                };
+                self.run(
+                    &format!("wifi radio {target}"),
+                    &["nmcli", "radio", "wifi", target],
+                );
+            }
+            Err(e) => eprintln!("lme-shell: control: wifi: {e}"),
+        }
     }
 
     /// Tier 2.3: adapter power via busctl (set_bluetooth argv; falls back

@@ -1541,6 +1541,51 @@ fn control_center_opens_and_matches_golden() {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2.4: Wi-Fi tile — the radio toggle runs the dry-run intent and the
+// optimistic snapshot flips the connected state (WifiPanel's connection
+// list is the TIER-2 completion item).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_wifi_tile_toggles_radio() {
+    let harness = spawn_harness_full(
+        "ctrl-wifi",
+        "1280x800",
+        None,
+        None,
+        // left tile of the first tile row (unit-locked 2x2 fill layout)
+        Some("motion:815,276@1500;click@1600"),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    let shell_log = harness.tmp.join("shell.log");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&shell_log) {
+            if let Some(found) = text.lines().find(|l| l.contains("dry-run: wifi")) {
+                line = found.to_string();
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        line.contains("wifi radio toggle"),
+        "wifi tile click must log the radio-toggle intent, got: {line:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tier 2.3: BlueZ tile — a fake org.bluez on the private bus (also serving
 // as the fake SYSTEM bus via DBUS_SYSTEM_BUS_ADDRESS) feeds the probe; the
 // tile click runs the dry-run power toggle; killing the fake degrades to

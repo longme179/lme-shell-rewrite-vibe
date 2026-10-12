@@ -92,8 +92,16 @@ e2e tile click missed) and the mock's scripted-event grace exit (3 s after
 the LAST event) is documented in the e2e (late no-op motion keeps the run
 alive). 156 passed + 4 ignored, 25 e2e green.
 
-**Next: Tier 2.4 NetworkManager -> TIER-2A delivery (zip + README +
-summary via webhook).**
+**Tier 2.4 (partial, TIER-2A scope) DONE**: wifi tile -> radio toggle
+(nmcli read + set, backend wifiToggle shape, dry-run logged, optimistic
+connected flip); e2e control_wifi_tile_toggles_radio. The WifiPanel
+connection list (nm D-Bus) is the TIER-2 completion item, as planned.
+157 passed + 4 ignored, 26 e2e green.
+
+**Next: TIER-2A delivery (deliver.sh TIER-2A: gates + export + replay +
+scan + zip + webhook), then Tier 2 completion (2.5 power profiles / idle
+inhibit / night light, 2.6 weather, 2.7 agenda, 2.8 clipboard, 2.9
+activity island, 2.10 workspace board, WifiPanel).**
 
 Previous session (Amendment 4: robustness + registry + D25):
 
