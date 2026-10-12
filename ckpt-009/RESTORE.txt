@@ -1,0 +1,7 @@
+Mode: full (repo.bundle carries all branches)
+1. If the zip arrived in parts:  cat ckpt-NNN.zip.part* > ckpt-NNN.zip
+2. unzip ckpt-NNN.zip && cd ckpt-NNN
+3. git clone repo.bundle lme && cd lme
+4. git checkout <branch named in ../MANIFEST.txt>   (other branches: git branch -a)
+5. if ../wip.patch exists: git apply ../wip.patch ; if ../untracked.tar exists: tar -xf ../untracked.tar
+6. Read STATE.md first, then docs/REBUILD_SPEC.md, then continue.

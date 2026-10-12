@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+*.qmlc
+*.jsc
+*.log
+*.bak
+.DS_Store
+
+# Rust build artifacts (added in Phase 2)
+target/

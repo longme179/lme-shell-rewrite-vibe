@@ -1,0 +1,48 @@
+// LME Shell — native edition integration fragment for niri 25.11+.
+// Do not replace your niri configuration. Remove existing binds with these
+// same keys before merging this fragment. The daemon never edits
+// ~/.config/niri/config.kdl.
+//
+// Start the shell from niri:
+spawn-sh-at-startup "lme-shell" "daemon"
+
+// Keybindings — same shortcuts as the legacy QML shell (config/niri/lme-shell.kdl),
+// now mapped to the native daemon's msg CLI.
+binds {
+    Mod+Space hotkey-overlay-title="Open application launcher" {
+        spawn "lme-shell" "msg" "toggle" "launcher";
+    }
+    Mod+Shift+E hotkey-overlay-title="Open power menu" {
+        spawn "lme-shell" "msg" "toggle" "power";
+    }
+    Mod+Tab hotkey-overlay-title="Window overview" { toggle-overview; }
+    // Panels not yet implemented in this build reply with an OSD notice:
+    Mod+A hotkey-overlay-title="Open control center" {
+        spawn "lme-shell" "msg" "toggle" "control";
+    }
+    Mod+N hotkey-overlay-title="Open notifications" {
+        spawn "lme-shell" "msg" "toggle" "notifications";
+    }
+    Mod+V hotkey-overlay-title="Clipboard history" {
+        spawn "lme-shell" "msg" "toggle" "clipboard";
+    }
+    Mod+Shift+Tab hotkey-overlay-title="Workspace board" {
+        spawn "lme-shell" "msg" "toggle" "overview";
+    }
+    Mod+Shift+A hotkey-overlay-title="Activity island" {
+        spawn "lme-shell" "msg" "toggle" "activity";
+    }
+    Mod+Comma hotkey-overlay-title="Open shell settings" {
+        spawn "lme-shell" "settings";
+    }
+}
+
+// Media keys (optional): show the native OSD like the legacy shell.
+// Adjust to your player/volume tooling; examples:
+// binds {
+//     XF86AudioRaiseVolume { spawn "sh" "-c" "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+ && lme-shell msg osd Volume $(wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -o '[0-9.]*' | awk '{print int($1*100)}')"; }
+//     XF86AudioLowerVolume { spawn "sh" "-c" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- && lme-shell msg osd Volume $(wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -o '[0-9.]*' | awk '{print int($1*100)}')"; }
+//     XF86AudioMute { spawn "sh" "-c" "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"; }
+//     XF86MonBrightnessUp { spawn "sh" "-c" "brightnessctl set 5%+ && lme-shell msg osd Backlight $(brightnessctl -m | grep -o '[0-9]*%' | tr -d '%')"; }
+//     XF86MonBrightnessDown { spawn "sh" "-c" "brightnessctl set 5%- && lme-shell msg osd Backlight $(brightnessctl -m | grep -o '[0-9]*%' | tr -d '%')"; }
+// }

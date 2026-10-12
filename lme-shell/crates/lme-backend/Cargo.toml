@@ -1,0 +1,23 @@
+[package]
+name = "lme-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust backend daemon for LME Shell (JSON-lines parity with scripts/desktop_backend.py)"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# JSON protocol + settings.json/desktop-entry pass-through; preserve_order
+# keeps insertion-ordered keys like Python dicts (settings.json layout parity).
+serde_json = { version = "1", features = ["preserve_order"] }
+# flock/fsync and other syscalls without libc boilerplate.
+rustix = { version = "1", features = ["fs", "process"] }
+# Blocking HTTPS client; matches the bounded request/response weather design
+# without an async runtime. Tests inject a custom transport via a trait.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+# Same clipboard history.sqlite3 schema/locking as the Python service.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Clipboard entry ids: sha256(mime ++ data), identical to the Python service.
+sha2 = "0.10"
+

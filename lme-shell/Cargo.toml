@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# LME Shell native rewrite — one workspace, one shared target dir.
+# See docs/NATIVE_PLAN.md and docs/adr/0002-daemon-architecture.md.
+[workspace]
+resolver = "2"
+members = [
+    "crates/lme-shell",
+    "crates/lme-ui",
+    "crates/lme-backend",
+    "crates/mock-compositor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/longme179/lme-fedora-niri-qs"
+publish = false
+
+[workspace.dependencies]
+# --- Wayland / rendering stack (ADR 0001, pinned) ---
+smithay-client-toolkit = "0.21.1"
+wayland-client = "0.31"
+tiny-skia = "0.12.0"
+cosmic-text = "0.19.0"
+# --- event loop ---
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+# --- data ---
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+# --- system ---
+rustix = { version = "1", features = ["fs", "process"] }
+inotify = "0.11"
+# --- D-Bus (notifications, tray, logind) ---
+zbus = "5"
+# --- internal ---
+lme-backend = { path = "crates/lme-backend" }
+lme-ui = { path = "crates/lme-ui" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.release]
+strip = true

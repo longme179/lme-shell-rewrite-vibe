@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Throwaway Phase 2 stack-spike B (step 2.0). See native/spike/README.md.
+[package]
+name = "spike-gpu"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+smithay-client-toolkit = "0.21"
+# system backend: EGL interop needs raw wl_display/wl_surface pointers, which only the
+# libwayland-client backend exposes (wayland-backend client_system feature)
+wayland-client = { version = "0.31", features = ["system"] }
+# raw-window-handle: the RawDisplayHandle/RawWindowHandle types glutin consumes
+raw-window-handle = "0.6"
+# glutin: EGL context creation on our own wl_surface (runtime dlopen of libEGL, no build dep)
+glutin = { version = "0.32", default-features = false, features = ["wayland", "egl"] }
+# femtovg: GLES vector renderer with rustybuzz text shaping (textlayout feature)
+femtovg = { version = "0.27", default-features = false, features = ["textlayout"] }

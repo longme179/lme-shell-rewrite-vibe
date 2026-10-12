@@ -1,0 +1,267 @@
+{
+  "apps": [
+    {
+      "id": "org.mozilla.firefox.desktop",
+      "name": "Firefox",
+      "icon": "firefox",
+      "path": "",
+      "terminal": false
+    },
+    {
+      "id": "kitty.desktop",
+      "name": "Kitty",
+      "icon": "kitty",
+      "path": "",
+      "terminal": false
+    },
+    {
+      "id": "org.gnome.Nautilus.desktop",
+      "name": "Files",
+      "icon": "org.gnome.Nautilus",
+      "path": "",
+      "terminal": false
+    }
+  ],
+  "niri": {
+    "available": true,
+    "workspaces": [
+      {
+        "id": 1,
+        "idx": 1,
+        "name": null,
+        "output": "eDP-1",
+        "is_focused": true,
+        "is_active": true
+      },
+      {
+        "id": 2,
+        "idx": 2,
+        "name": null,
+        "output": "eDP-1",
+        "is_focused": false,
+        "is_active": false
+      },
+      {
+        "id": 3,
+        "idx": 3,
+        "name": null,
+        "output": "eDP-1",
+        "is_focused": false,
+        "is_active": false
+      },
+      {
+        "id": 4,
+        "idx": 4,
+        "name": null,
+        "output": "eDP-1",
+        "is_focused": false,
+        "is_active": false
+      }
+    ],
+    "windows": [
+      {
+        "id": 1,
+        "title": "LME Shell — Preview",
+        "app_id": "firefox",
+        "workspace_id": 1,
+        "is_focused": true
+      },
+      {
+        "id": 2,
+        "title": "Terminal · project",
+        "app_id": "kitty",
+        "workspace_id": 1,
+        "is_focused": false
+      },
+      {
+        "id": 3,
+        "title": "Documents",
+        "app_id": "org.gnome.Nautilus",
+        "workspace_id": 2,
+        "is_focused": false
+      }
+    ]
+  },
+  "system": {
+    "cpu": 12.4,
+    "memoryPercent": null,
+    "memoryUsedGiB": null,
+    "memoryTotalGiB": null,
+    "tempC": null,
+    "battery": {
+      "available": true,
+      "percent": 82,
+      "charging": false
+    },
+    "network": {
+      "available": true,
+      "enabled": true,
+      "connected": true,
+      "ssid": "Home Wi-Fi",
+      "strength": 88,
+      "networks": [
+        {
+          "ssid": "Home Wi-Fi",
+          "strength": 88,
+          "connected": true
+        },
+        {
+          "ssid": "Guest",
+          "strength": 62,
+          "connected": false
+        }
+      ]
+    },
+    "bluetooth": {
+      "available": true,
+      "enabled": true,
+      "softBlocked": false,
+      "hardBlocked": false,
+      "adapter": "/org/bluez/hci0",
+      "adapters": [
+        {
+          "path": "/org/bluez/hci0",
+          "name": "Laptop Bluetooth",
+          "enabled": true
+        }
+      ],
+      "devices": [
+        {
+          "path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+          "name": "Headphones",
+          "connected": true
+        }
+      ]
+    },
+    "audio": {
+      "available": true,
+      "volume": 42,
+      "muted": false
+    },
+    "microphone": {
+      "available": true,
+      "volume": 60,
+      "muted": false
+    },
+    "brightness": {
+      "available": true,
+      "percent": 65
+    },
+    "powerProfile": "balanced",
+    "charging": {
+      "available": true,
+      "canSet": true,
+      "kind": "threshold",
+      "mode": "conservation",
+      "limitPercent": 85,
+      "supports85": true,
+      "reason": "",
+      "busy": false
+    }
+  },
+  "weather": {
+    "available": true,
+    "configured": true,
+    "automatic": false,
+    "loading": false,
+    "stale": false,
+    "error": "",
+    "location": {
+      "name": "Hanoi",
+      "country": "VN",
+      "latitude": 21.03,
+      "longitude": 105.8
+    },
+    "temperature": 29,
+    "feelsLike": 32,
+    "humidity": 76,
+    "wind": 10,
+    "windUnit": "km/h",
+    "unit": "°C",
+    "condition": "Partly cloudy",
+    "icon": "weather-cloud",
+    "updatedAt": null,
+    "daily": [
+      {
+        "date": "2026-10-11",
+        "min": 25,
+        "max": 31,
+        "rainChance": 30
+      },
+      {
+        "date": "2026-10-12",
+        "min": 24,
+        "max": 30,
+        "rainChance": 65
+      },
+      {
+        "date": "2026-10-13",
+        "min": 25,
+        "max": 32,
+        "rainChance": 20
+      }
+    ],
+    "search": {
+      "query": "",
+      "loading": false,
+      "results": [],
+      "error": ""
+    }
+  },
+  "preferences": {
+    "language": "en",
+    "animations": true,
+    "opacity": 0.85,
+    "accent": "#bd93f9",
+    "wallpaper": "",
+    "terminal": "kitty",
+    "bluetoothAdapter": "",
+    "tasks": [
+      {
+        "id": "a1",
+        "text": "ship parity",
+        "done": false
+      }
+    ],
+    "weatherAutoLocation": false,
+    "weatherLocation": {
+      "name": "Hanoi",
+      "country": "VN",
+      "latitude": 21.03,
+      "longitude": 105.8
+    },
+    "weatherUnit": "celsius",
+    "activityEnabled": true,
+    "clipboardEnabled": true,
+    "clipboardImages": true,
+    "clipboardLimit": 200,
+    "barStyle": "connected",
+    "barFontSize": 14,
+    "barLayout": {
+      "left": [
+        "launcher",
+        "overview",
+        "workspaces"
+      ],
+      "center": [
+        "activity"
+      ],
+      "right": [
+        "clipboard",
+        "tray",
+        "notifications",
+        "audio",
+        "network",
+        "battery",
+        "clock",
+        "settings"
+      ]
+    }
+  },
+  "lastResult": {
+    "ok": true,
+    "action": "ready",
+    "message": "Backend ready",
+    "sequence": 0
+  }
+}

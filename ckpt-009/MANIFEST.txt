@@ -1,0 +1,23 @@
+id: ckpt-009
+time: 2026-10-11T19:37:28Z
+note: Final session checkpoint: TIER-1 delivered (commit 6169ddc)
+mode: full
+branch: rewrite/native
+head: 0ea58fb026b91ecfc3331e1ec6adcc3d00b60165
+--- status
+--- log
+0ea58fb STATE: TIER-1 delivery record (replayed clean, sent)
+6169ddc deliver: replay builds debug workspace bins for the e2e tests too
+17666b6 tests: guard remaining stub-dependent parity tests for export replay
+b459ccb tests: guard niri_socket subprocess-path tests on the legacy stub tree
+c83a343 fmt
+7f29e5a tests: legacy-referencing parity tests skip cleanly when legacy/ is absent (release exports)
+c3bfe01 deliver: build workspace binaries before tests (e2e tests spawn mock-compositor)
+16a6c72 Tier 4 docs: README (honest coverage), PERF, NATIVE_PLAN final pass, STATE, kdl fragment, DECISIONS D13-D17
+20f2c62 Tier 0/1 verification: golden e2e tests, mock focus/sizing, idle+anim benches
+6a4097c tests: drop unused imports after python_tree refactor
+b6d2ecd Tier 0+1 core: lme-shell daemon, msg CLI, bar, power menu, launcher, OSD
+f6342a5 Tier 0: lme-ui toolkit — render backend, text, theme, shadows, anim, widgets, Wayland core
+2ff97a9 Restructure for the native rewrite: legacy/ isolation, research/ spikes, crates/ workspace
+af212ee STATE: baseline replication report sent (replayed clean)
+e933a2f Step U: sync with upstream origin/main ead4446 -> ef5281c

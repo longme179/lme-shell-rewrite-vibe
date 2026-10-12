@@ -1,0 +1,9 @@
+LME Shell native source export — label TIER-1, commit 6169ddc, date 20261011.
+
+Excluded from this archive (they live in the upstream repository, branch
+rewrite/native and main):
+- legacy/        the original QML/Quickshell + Python shell (executable spec)
+- docs/previews/ QML render previews
+- assets/wallpapers/ original wallpaper art
+
+Everything else is the complete Rust workspace. Build: see README.md.

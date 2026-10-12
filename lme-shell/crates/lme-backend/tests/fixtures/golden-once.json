@@ -1,0 +1,242 @@
+{
+  "apps": [
+    {
+      "id": "alpha.desktop",
+      "name": "Alpha US",
+      "icon": "alpha",
+      "path": "<FIXTURE>/home/.local/share/applications/alpha.desktop",
+      "terminal": false,
+      "genericName": "Editor US",
+      "comment": "US comment",
+      "keywords": [
+        "text",
+        "editor"
+      ]
+    },
+    {
+      "id": "system.desktop",
+      "name": "System Tool",
+      "icon": "system-tool",
+      "path": "<FIXTURE>/share/applications/system.desktop",
+      "terminal": false,
+      "genericName": "",
+      "comment": "",
+      "keywords": []
+    },
+    {
+      "id": "term.desktop",
+      "name": "Terminal App",
+      "icon": "",
+      "path": "<FIXTURE>/home/.local/share/applications/term.desktop",
+      "terminal": true,
+      "genericName": "",
+      "comment": "",
+      "keywords": []
+    },
+    {
+      "id": "zeta.desktop",
+      "name": "Zeta",
+      "icon": "zeta",
+      "path": "<FIXTURE>/home/.local/share/applications/zeta.desktop",
+      "terminal": false,
+      "genericName": "",
+      "comment": "",
+      "keywords": []
+    }
+  ],
+  "niri": {
+    "available": true,
+    "workspaces": [
+      {
+        "id": 1,
+        "idx": 1,
+        "name": null,
+        "output": "eDP-1",
+        "is_focused": true,
+        "is_active": true
+      },
+      {
+        "id": 2,
+        "idx": 2,
+        "name": null,
+        "output": "eDP-1",
+        "is_focused": false,
+        "is_active": false
+      }
+    ],
+    "windows": [
+      {
+        "id": 10,
+        "title": "Firefox",
+        "app_id": "firefox",
+        "workspace_id": 1,
+        "is_focused": true
+      },
+      {
+        "id": 11,
+        "title": "kitty",
+        "app_id": "kitty",
+        "workspace_id": 2,
+        "is_focused": false
+      }
+    ]
+  },
+  "system": {
+    "cpu": null,
+    "memoryPercent": null,
+    "memoryUsedGiB": null,
+    "memoryTotalGiB": null,
+    "tempC": null,
+    "battery": {
+      "available": false,
+      "percent": null,
+      "charging": false
+    },
+    "network": {
+      "available": true,
+      "enabled": true,
+      "connected": true,
+      "ssid": "HomeNet",
+      "strength": 88,
+      "networks": [
+        {
+          "ssid": "HomeNet",
+          "strength": 88,
+          "connected": true
+        },
+        {
+          "ssid": "Guest",
+          "strength": 45,
+          "connected": false
+        }
+      ]
+    },
+    "bluetooth": {
+      "available": true,
+      "enabled": true,
+      "adapters": [
+        {
+          "path": "/org/bluez/hci0",
+          "name": "Laptop Bluetooth",
+          "enabled": true
+        }
+      ],
+      "devices": [
+        {
+          "path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+          "name": "Headphones",
+          "connected": true
+        }
+      ],
+      "adapter": "/org/bluez/hci0",
+      "softBlocked": false,
+      "hardBlocked": false
+    },
+    "audio": {
+      "available": true,
+      "volume": 45,
+      "muted": false
+    },
+    "microphone": {
+      "available": true,
+      "volume": 45,
+      "muted": false
+    },
+    "brightness": {
+      "available": true,
+      "percent": 45
+    },
+    "powerProfile": "balanced",
+    "charging": {
+      "available": false,
+      "kind": "",
+      "mode": "",
+      "limitPercent": null,
+      "supports85": false,
+      "writable": false,
+      "reason": "No charge-control interface is exposed by this kernel/firmware.",
+      "canSet": false,
+      "busy": false
+    },
+    "recording": {
+      "active": false
+    }
+  },
+  "weather": {
+    "available": false,
+    "configured": true,
+    "automatic": false,
+    "location": {
+      "name": "Hanoi",
+      "country": "VN",
+      "latitude": 21.03,
+      "longitude": 105.8
+    },
+    "loading": false,
+    "stale": false,
+    "error": "",
+    "search": {
+      "query": "",
+      "loading": false,
+      "results": [],
+      "error": ""
+    },
+    "updatedAt": null
+  },
+  "preferences": {
+    "language": "en",
+    "animations": true,
+    "opacity": 0.85,
+    "accent": "#bd93f9",
+    "wallpaper": "",
+    "terminal": "kitty",
+    "bluetoothAdapter": "",
+    "tasks": [
+      {
+        "id": "a1",
+        "text": "ship parity",
+        "done": false
+      }
+    ],
+    "weatherAutoLocation": false,
+    "weatherLocation": {
+      "name": "Hanoi",
+      "country": "VN",
+      "latitude": 21.03,
+      "longitude": 105.8
+    },
+    "weatherUnit": "celsius",
+    "activityEnabled": true,
+    "clipboardEnabled": true,
+    "clipboardImages": true,
+    "clipboardLimit": 200,
+    "barStyle": "connected",
+    "barFontSize": 14,
+    "barLayout": {
+      "left": [
+        "launcher",
+        "overview",
+        "workspaces"
+      ],
+      "center": [
+        "activity"
+      ],
+      "right": [
+        "clipboard",
+        "tray",
+        "notifications",
+        "audio",
+        "network",
+        "battery",
+        "clock",
+        "settings"
+      ]
+    }
+  },
+  "lastResult": {
+    "ok": true,
+    "action": "ready",
+    "message": "Backend ready",
+    "sequence": 0
+  }
+}

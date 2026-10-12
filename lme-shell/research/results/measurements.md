@@ -1,0 +1,21 @@
+== Phase 2 stack spike measurements (2026-10-11T13:13:10+00:00) ==
+
+
+## Raw table
+```
+scenario|avg_rss_kb|peak_rss_kb|cpu_pct_after_settle|sampled_ms|bind_to_map_ms|rc
+binary|raw_bytes|stripped_bytes
+mock-compositor|1311752|921424
+spike-cpu|5904048|4603352
+spike-gpu|3709536|2844576
+spike-slint|10776136|8967384
+loc|main_rs|slint_markup
+spike-cpu|586|0
+spike-slint|512|64
+spike-gpu|466|0
+build|seconds
+mock-compositor|20
+spike-cpu|106
+spike-gpu|53
+spike-slint|149
+```
