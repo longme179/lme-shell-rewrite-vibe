@@ -102,6 +102,12 @@ pub struct Shell {
     /// one parked worker thread, jobs submitted only when the panel needs
     /// a snapshot — PERF register). `None` only if construction failed.
     pub weather: Option<lme_backend::weather::WeatherClient>,
+    /// Tier 2.7 agenda state (sub-tab, viewed month, task draft, timer
+    /// view) — UI state that must survive the 5 s in-place refreshes.
+    pub agenda: crate::agenda::AgendaState,
+    /// Tier 2.7 focus timer / stopwatch (the QML singleton port; daemon
+    /// state so it keeps running while the panel closes).
+    pub focus_timer: crate::agenda::FocusTimer,
     pub osd: Option<(u64, Instant)>,
     /// Dry-run volume preview shown by the audio-pill wheel (finding e);
     /// re-seeded from the system snapshot when the preview goes stale.
@@ -173,6 +179,8 @@ impl Shell {
             weather: Some(lme_backend::weather::WeatherClient::new(
                 std::sync::Arc::new(lme_backend::weather::HttpFetch::new()),
             )),
+            agenda: crate::agenda::AgendaState::new(today_ymd()),
+            focus_timer: crate::agenda::FocusTimer::default(),
             osd: None,
             volume_preview: 0.0,
             volume_preview_at: None,
@@ -295,9 +303,10 @@ pub fn clock_label(compact: bool) -> String {
     }
 }
 
-/// (weekday0-6, month1-12, day, hour, minute) from the system clock
-/// (UTC-independent civil time via libc localtime; no chrono dependency).
-fn chrono_like_now() -> (i32, i32, i32, i32, i32) {
+/// (year, month1-12, day, weekday0-6, hour, minute) from the system clock —
+/// the shared civil math (UTC-independent via libc localtime; no chrono
+/// dependency).
+fn now_civil_full() -> (i32, i32, i32, i32, i32, i32) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -319,14 +328,26 @@ fn chrono_like_now() -> (i32, i32, i32, i32, i32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
     let weekday = (days + 4).rem_euclid(7); // 1970-01-01 was a Thursday
-    let _ = year;
     (
-        weekday as i32,
+        year as i32,
         m as i32,
         d as i32,
+        weekday as i32,
         hour as i32,
         minute as i32,
     )
+}
+
+/// (weekday0-6, month1-12, day, hour, minute) — the clock chain shape.
+fn chrono_like_now() -> (i32, i32, i32, i32, i32) {
+    let (_, m, d, wd, h, min) = now_civil_full();
+    (wd, m, d, h, min)
+}
+
+/// (year, month1-12, day) — the calendar's today (Tier 2.7).
+pub fn today_ymd() -> (i32, u32, u32) {
+    let (y, m, d, _, _, _) = now_civil_full();
+    (y, m.clamp(1, 12) as u32, d.clamp(1, 31) as u32)
 }
 
 /// Read the local UTC offset for a timestamp from /etc/localtime semantics.
@@ -408,6 +429,20 @@ impl AppHandler for Shell {
                     value,
                 );
                 schedule_slider_flush(state, "brightness");
+            }
+            // Tier 2.7: the task entry took keyboard focus (a click on the
+            // input) — set the window focus so Key events target it.
+            UiEvent::Focus(crate::agenda::ids::TASK_ENTRY) => {
+                if let Some(id) = self.control {
+                    let focused = state.window(id).and_then(|w| w.focus);
+                    if focused != Some(crate::agenda::ids::TASK_ENTRY) {
+                        state.set_keyboard_focus(id, Some(crate::agenda::ids::TASK_ENTRY));
+                    }
+                }
+            }
+            // Tier 2.7: Enter in the task entry = Add (legacy onAccepted)
+            UiEvent::Submit(crate::agenda::ids::TASK_ENTRY, text) => {
+                self.add_task(state, text);
             }
             UiEvent::Submit(_, _) | UiEvent::Slide(_, _) | UiEvent::Toggle(_, _) => {}
             UiEvent::Focus(_) => {}
@@ -511,8 +546,13 @@ impl Shell {
             }
             return;
         }
-        // control center widgets — bounded to the registered range (D23)
+        // control center widgets — bounded to the registered ranges (D23):
+        // the shell's own ids, and the Agenda tab's (Tier 2.7)
         if self.control == Some(window_id) {
+            if click_ids::AGENDA_PANEL.contains(id) {
+                self.handle_agenda_click(state, id);
+                return;
+            }
             if !click_ids::CONTROL_PANEL.contains(id) {
                 return;
             }
@@ -937,6 +977,145 @@ impl Shell {
         }
     }
 
+    // ---- Tier 2.7: agenda interactions ----
+
+    /// Shared add-task path (the Add button and Enter/Submit).
+    fn add_task(&mut self, state: &mut UiState, text: String) {
+        let text = text.trim().to_string();
+        if text.is_empty() || self.tasks_len() >= 100 {
+            return;
+        }
+        let mut tasks = crate::agenda::tasks_from_settings(&self.settings.values);
+        tasks.push(crate::agenda::TaskItem {
+            id: crate::agenda::new_task_id(),
+            text,
+            done: false,
+        });
+        if let Err(e) = self
+            .settings
+            .set("tasks", crate::agenda::tasks_to_value(&tasks))
+        {
+            eprintln!("lme-shell: agenda: add task: {e}");
+            return;
+        }
+        self.agenda.draft.clear();
+        self.refresh_control_center(state);
+    }
+
+    fn tasks_len(&self) -> usize {
+        crate::agenda::tasks_from_settings(&self.settings.values).len()
+    }
+
+    /// Read the live task entry text through the panel (the Add-button
+    /// path; Submit carries the text directly).
+    fn live_entry_text(&mut self, state: &mut UiState) -> String {
+        let Some(id) = self.control else {
+            return String::new();
+        };
+        state
+            .window(id)
+            .and_then(|w| w.root().as_any().downcast_mut::<panels::SlidePanelRight>())
+            .and_then(|wrap| {
+                wrap.panel_mut()
+                    .as_any()
+                    .downcast_mut::<crate::control_center::ControlCenterPanel>()
+            })
+            .and_then(|panel| panel.agenda_entry_text())
+            .unwrap_or_default()
+    }
+
+    fn handle_agenda_click(&mut self, state: &mut UiState, id: u64) {
+        use crate::agenda::ids as aid;
+        match id {
+            id if (aid::SUBTAB_BASE..aid::SUBTAB_BASE + 3).contains(&id) => {
+                self.agenda.subtab = (id - aid::SUBTAB_BASE) as usize;
+                self.refresh_control_center(state);
+            }
+            aid::CAL_PREV => {
+                self.agenda.cal_prev_month();
+                self.refresh_control_center(state);
+            }
+            aid::CAL_NEXT => {
+                self.agenda.cal_next_month();
+                self.refresh_control_center(state);
+            }
+            aid::CAL_TODAY => {
+                let (y, m, _) = crate::daemon::today_ymd();
+                self.agenda.cal_year = y;
+                self.agenda.cal_month = m;
+                self.refresh_control_center(state);
+            }
+            aid::TASK_ADD => {
+                let text = self.live_entry_text(state);
+                self.add_task(state, text);
+            }
+            aid::TASK_CLEAR => {
+                let tasks: Vec<_> = crate::agenda::tasks_from_settings(&self.settings.values)
+                    .into_iter()
+                    .filter(|task| !task.done)
+                    .collect();
+                if let Err(e) = self
+                    .settings
+                    .set("tasks", crate::agenda::tasks_to_value(&tasks))
+                {
+                    eprintln!("lme-shell: agenda: clear completed: {e}");
+                }
+                self.refresh_control_center(state);
+            }
+            id if (aid::TIMER_MODE_BASE..aid::TIMER_MODE_BASE + 3).contains(&id) => {
+                self.focus_timer
+                    .select_mode((id - aid::TIMER_MODE_BASE) as usize);
+                self.refresh_control_center(state);
+            }
+            aid::TIMER_TOGGLE => {
+                if self.agenda.sw_view {
+                    self.focus_timer.sw_toggle();
+                } else if self.focus_timer.running {
+                    self.focus_timer.pause();
+                } else {
+                    self.focus_timer.start();
+                }
+                self.refresh_control_center(state);
+            }
+            aid::TIMER_RESET => {
+                if self.agenda.sw_view {
+                    self.focus_timer.sw_reset();
+                } else {
+                    self.focus_timer.reset();
+                }
+                self.refresh_control_center(state);
+            }
+            id if (aid::TIMER_SW_BASE..aid::TIMER_SW_BASE + 2).contains(&id) => {
+                self.agenda.sw_view = id == aid::TIMER_SW_BASE + 1;
+                self.refresh_control_center(state);
+            }
+            // task rows: check / delete by index (stride 4, slots 0/1)
+            id if crate::click_ids::AGENDA_PANEL.contains(id) && id >= aid::TASK_ROW_BASE => {
+                let index = ((id - aid::TASK_ROW_BASE) / 4) as usize;
+                let slot = (id - aid::TASK_ROW_BASE) % 4;
+                let mut tasks = crate::agenda::tasks_from_settings(&self.settings.values);
+                let Some(task) = tasks.get_mut(index) else {
+                    return;
+                };
+                match slot {
+                    0 => task.done = !task.done,
+                    1 => {
+                        tasks.remove(index);
+                    }
+                    _ => return,
+                }
+                if let Err(e) = self
+                    .settings
+                    .set("tasks", crate::agenda::tasks_to_value(&tasks))
+                {
+                    eprintln!("lme-shell: agenda: update task: {e}");
+                }
+                self.refresh_control_center(state);
+            }
+            _ => {}
+        }
+    }
+
     // ---- panel management (legacy ShellState.togglePanel) ----
 
     pub fn toggle_panel(&mut self, state: &mut UiState, panel: &str) {
@@ -1127,6 +1306,23 @@ impl Shell {
         self.probe_bluetooth();
         self.probe_power_profile();
         self.probe_weather();
+        // Tier 2.7: pull the live task entry text out of the panel BEFORE
+        // building the data — the rebuild itself syncs the draft, so a
+        // refresh in the middle of typing never loses it.
+        {
+            let draft = state
+                .window(id)
+                .and_then(|w| w.root().as_any().downcast_mut::<panels::SlidePanelRight>())
+                .and_then(|wrap| {
+                    wrap.panel_mut()
+                        .as_any()
+                        .downcast_mut::<crate::control_center::ControlCenterPanel>()
+                })
+                .and_then(|panel| panel.agenda_entry_text());
+            if let Some(draft) = draft {
+                self.agenda.draft = draft;
+            }
+        }
         let data = crate::control_center::control_data(self);
         let tab = self.control_tab;
         let w = crate::control_center::PANEL_W;
@@ -1583,6 +1779,34 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
                 eprintln!("lme-shell: mpris: session bus unavailable ({e})");
             }
         }
+    }
+
+    // ---- Tier 2.7: focus timer / stopwatch tick (1 s, ONLY while the
+    // timer is active — PERF register; zero wakeups when idle) ----
+    {
+        let timer = calloop::timer::Timer::from_duration(Duration::from_secs(1));
+        let _ = handle.insert_source(timer, |_, _, state| {
+            crate::daemon::with_shell(state, |shell, state| {
+                if !shell.focus_timer.is_active() {
+                    return;
+                }
+                let completed = shell.focus_timer.tick();
+                if completed {
+                    // legacy FocusTimer: local notification on completion
+                    let (summary, body) = if shell.focus_timer.mode == 0 {
+                        ("Focus session complete", "Take a moment to rest.")
+                    } else {
+                        ("Break complete", "Ready for another focus session?")
+                    };
+                    shell.local_notification(state, summary.into(), body.into());
+                }
+                // update the open panel (the readout); other tabs don't care
+                if shell.control.is_some() {
+                    shell.refresh_control_center(state);
+                }
+            });
+            calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1))
+        });
     }
 
     // ---- settings/palette hot reload (inotify; 5 s mtime poll fallback) ----

@@ -78,3 +78,23 @@ Every entry: symptom, repro, ruled out, not tested, workaround/status.
 - **Next step**: when the tray panel next gets touched, align it with the
   Flickable convention (or port it onto the Flickable widget) and add a
   scroll e2e.
+
+## KI-5: agenda calendar golden flaked once on a mid-reveal commit capture
+
+- **Symptom**: `agenda_calendar_golden` failed once in the first full-suite
+  run (31 tests) after passing its regen run and 3 isolated runs; the
+  immediately following full-suite run was green.
+- **Repro**: not reproduced since (1 in ~3 full-suite runs); the suspect is
+  the `Capture::Commit(3)` frame landing at a slightly different reveal
+  fraction under 31-way parallel e2e load (the reveal tween shifts the
+  panel by up to 40 px and fades alpha — a frame of jitter can exceed the
+  golden tolerance).
+- **Ruled out**: the calendar math (unit-locked); the date line (stable
+  within a day); leftover processes.
+- **Fix applied**: the test now captures a TIMED frame (AtMs 2600 — after
+  the ~460 ms reveal completes and after the tab click at 1600), which is
+  deterministic; verified with 4 consecutive green runs. The other goldens
+  keep Commit(3) (stable across many sessions — revisit per-test if any
+  flakes again).
+- **Not tested**: forcing the parallel-load jitter to reproduce the
+  original failure (judged not worth the flakiness it would add).

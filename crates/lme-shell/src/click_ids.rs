@@ -68,6 +68,13 @@ pub const CONTROL_PANEL: IdRange = IdRange {
     base: 0x8000,
     end: 0x8100,
 };
+/// Agenda tab (agenda::ids — sub-tabs, calendar nav, task rows, timer).
+/// Tier 2.7. Rows: TASK_ROW_BASE + i*4 + {0,1}, i < 100 -> 0x8300..0x8490.
+pub const AGENDA_PANEL: IdRange = IdRange {
+    name: "agenda-panel",
+    base: 0x8200,
+    end: 0x8500,
+};
 /// Toast card dismiss buttons: base + notification u32 id
 /// (notifications::toast_dismiss_id).
 pub const TOAST_CARDS: IdRange = IdRange {
@@ -101,6 +108,7 @@ pub const ALL: &[IdRange] = &[
     WORKSPACE_BUTTONS,
     POWER_PANEL,
     CONTROL_PANEL,
+    AGENDA_PANEL,
     LAUNCHER_PANEL,
     TOAST_CARDS,
     TRAY_ROWS,
@@ -209,6 +217,12 @@ mod tests {
 
         // toast encoders: boundary ids of the notification u32 space must
         // stay inside (dismiss) or be refused (actions, see notifications).
+        assert!(AGENDA_PANEL.contains(crate::agenda::ids::TASK_ROW_BASE));
+        // the 100-task block (stride 4): last valid id inside, and the
+        // AGENDA range itself ends at 0x8500 (a slot-4 id would index 100
+        // and the handler's get_mut returns None — safe)
+        assert!(AGENDA_PANEL.contains(crate::agenda::ids::TASK_ROW_BASE + 399));
+        assert!(!AGENDA_PANEL.contains(crate::agenda::ids::TASK_ROW_BASE + 1600));
         assert!(TOAST_CARDS.contains(crate::notifications::toast_dismiss_id(0)));
         assert!(TOAST_CARDS.contains(crate::notifications::toast_dismiss_id(u32::MAX)));
         assert!(crate::notifications::toast_action_id(u32::MAX, 0).is_none());

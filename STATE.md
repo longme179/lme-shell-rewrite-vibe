@@ -137,9 +137,27 @@ e2e); the tray's own scroll is now KI-4 (hypothesis: inverted, never
 observable — its panel never scrolls in the e2e).
 164 passed + 4 ignored; 28 e2e green; fmt+clippy clean.
 
-**Next: Tier 2 completion — 2.7 agenda/calendar, 2.8 clipboard, 2.9
-activity island (MPRIS transport), 2.10 workspace board, WifiPanel
-connection list; then TIER-2 delivery.**
+**Tier 2.7 agenda DONE (2026-10-13)**: the Agenda tab (index 3) with
+three sub-tabs — Calendar (Hinnant civil math, Mon-first grid, today
+highlight, month nav; the weekday/date fns unit-locked against `date`),
+To do (the frozen `tasks` pref: full CRUD through the REAL typing path —
+mock key events to a click-focused TextInput, Submit on Enter; the entry
+draft survives the 5 s in-place refreshes via a panel readback walk
+(AgendaTab::entry_text, unit-locked); per-task ids TASK_ROW_BASE+i*4),
+Timer (FocusTimer as DAEMON state: keeps running while the panel closes,
+1 Hz chain only while active — PERF register; local notification on
+completion; pause/tick CEIL parity with the QML Math.ceil — the e2e
+start/pause golden proves "24:59" deterministically). e2e:
+agenda_calendar_golden (VLM: no defects), agenda_tasks_crud_through_typing
+(settings.json is the proof of every step), agenda_timer (VLM: readout
+exactly 24:59). Found en route: the mock's minimal keymap has no h/b/c —
+"sip" not "ship"; the agenda calendar golden flaked ONCE on a mid-reveal
+Commit(3) capture under 31-way parallel load → fixed with a timed
+post-reveal capture (KI-5). 173 passed + 4 ignored; 31 e2e green.
+
+**Next: Tier 2 completion — 2.8 clipboard, 2.9 activity island (MPRIS
+transport), 2.10 workspace board, WifiPanel connection list; then
+TIER-2 delivery.**
 
 Previous session (Amendment 4: robustness + registry + D25):
 
@@ -249,7 +267,7 @@ register lives in docs/PERF.md; re-measure idle at every tier end.**
 ## Gate status (HEAD)
 
 `cargo fmt` ✓ · `cargo clippy --workspace --all-targets -D warnings` ✓ ·
-`cargo test --workspace`: **164 passed, 0 failed, 4 ignored** (lme-backend
+`cargo test --workspace`: **173 passed, 0 failed, 4 ignored** (lme-backend
 goldens ignored with upstream-drift reasons — docs/UPSTREAM_SYNC.md).
 Tier 0.9 + hygiene gate: e2e x10 green (scripts/e2e-x10.sh).
 

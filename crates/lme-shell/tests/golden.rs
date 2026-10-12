@@ -1683,6 +1683,184 @@ fn control_weather_card_and_refresh() {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2.7: agenda — the Agenda tab (calendar golden), the task list CRUD
+// through the REAL typing path (mock key events -> focused TextInput ->
+// Submit), and the focus timer start/pause with a deterministic readout.
+// Panel-local coords from agenda::tests::agenda_positions_for_e2e; window
+// offset (666,10); body content shifts +10 (panel 774 vs the 740 unit).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agenda_calendar_golden() {
+    let png = capture_png("control-agenda-calendar", 0);
+    let _ = std::fs::remove_file(&png);
+    let harness = spawn_harness_full(
+        "agenda-cal",
+        "1280x800",
+        // timed capture AFTER the reveal completes (~1.5 s) and after the
+        // tab click at 1600 — a mid-reveal commit capture flaked once
+        // under parallel load (KI-5); the timed frame is deterministic
+        Some((Capture::AtMs(2600), &png)),
+        None,
+        // the Agenda MAIN tab (top grid, row 2 col 0): panel (16,112)
+        // -> window (682,122); the tab grid is in the fixed top (no shift)
+        Some("motion:682,122@1500;click@1600"),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "capture never happened"
+    );
+    let image = decode_png(&png);
+    assert_eq!((image.width, image.height), (1280, 800));
+    let meta = std::fs::metadata(&png).expect("capture file");
+    assert!(meta.len() <= 200 * 1024, "golden candidate too large");
+    assert_matches_golden(&png, "control-agenda-calendar.png");
+}
+
+#[test]
+fn agenda_tasks_crud_through_typing() {
+    let harness = spawn_harness_full(
+        "agenda-todo",
+        "1280x800",
+        None,
+        // type "sip" into the entry (focused by the click at 2500; the
+        // first key waits 500 ms clear of the focus click; the mock's
+        // minimal keymap has no h/b/c/... — a,s,i,p are covered), Enter at
+        // 3800; then check the task at 4600 and delete it at 5400
+        Some("s@3000,i@3100,p@3200,enter@3800"),
+        Some(
+            [
+                "motion:682,122@1500;click@1600",  // Agenda tab
+                "motion:973,210@2000;click@2100",  // To do subtab
+                "motion:946,296@2400;click@2500",  // focus the entry
+                "motion:698,384@4500;click@4600",  // check task 0
+                "motion:1202,384@5300;click@5400", // delete task 0
+            ]
+            .join(";")
+            .as_str(),
+        ),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    // the settings file is the deterministic proof of every CRUD step
+    let settings = || {
+        std::fs::read_to_string(harness.tmp.join("config/lme-shell/settings.json"))
+            .unwrap_or_default()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if settings().contains("\"sip\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let after_add = settings();
+    assert!(
+        after_add.contains("\"sip\""),
+        "Enter must add the task; settings.json:\n{after_add}\nshell.log:\n{}",
+        std::fs::read_to_string(harness.tmp.join("shell.log")).unwrap_or_default()
+    );
+    // the typed task is checked at 4200: done=true
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        let s = settings();
+        if s.contains("\"done\": true") || s.contains("\"done\":true") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let after_check = settings();
+    assert!(
+        after_check.contains("\"sip\"")
+            && (after_check.contains("\"done\": true") || after_check.contains("\"done\":true")),
+        "the check click must persist done=true; settings.json:\n{after_check}"
+    );
+    // deleted at 5000: the task list is empty again
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        let s = settings();
+        if !s.contains("\"sip\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let after_delete = settings();
+    assert!(
+        !after_delete.contains("\"sip\""),
+        "the delete click must remove the task; settings.json:\n{after_delete}"
+    );
+    assert!(
+        harness.msg(&["ping"]) == "pong",
+        "daemon alive after the CRUD round-trip"
+    );
+}
+
+#[test]
+fn agenda_timer_start_pause_deterministic() {
+    let png = capture_png("control-agenda-timer", 0);
+    let _ = std::fs::remove_file(&png);
+    let harness = spawn_harness_full(
+        "agenda-timer",
+        "1280x800",
+        Some((Capture::AtMs(4400), &png)),
+        None,
+        Some(
+            [
+                "motion:682,122@1500;click@1600",  // Agenda tab
+                "motion:1165,210@2000;click@2100", // Timer subtab
+                "motion:906,496@2200;click@2300",  // Start (25:00 runs)
+                "motion:906,496@3400;click@3500",  // Pause ~1.2 s in
+                "motion:5,5@9000",                 // keep the mock alive
+            ]
+            .join(";")
+            .as_str(),
+        ),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "capture never happened"
+    );
+    let image = decode_png(&png);
+    assert_eq!((image.width, image.height), (1280, 800));
+    assert_matches_golden(&png, "control-agenda-timer.png");
+    assert!(
+        harness.msg(&["ping"]) == "pong",
+        "daemon alive after the timer round"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tier 2.4: Wi-Fi tile — the radio toggle runs the dry-run intent and the
 // optimistic snapshot flips the connected state (WifiPanel's connection
 // list is the TIER-2 completion item).

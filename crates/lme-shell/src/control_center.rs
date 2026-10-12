@@ -59,7 +59,7 @@ const TAB_TIERS: [&str; 6] = [
     "",
     "Tier 2.2 (audio mixer)",
     "Tier 2.3/2.4 (Bluetooth, devices)",
-    "Tier 2.7 (calendar and to-do)",
+    "",
     "Tier 2.6 (notification history)",
     "Tier 2.5 (system monitor)",
 ];
@@ -87,6 +87,15 @@ pub struct ControlData {
     pub battery_charging: bool,
     /// Tier 2.6 weather card feed (None hides the card, like media).
     pub weather: Option<WeatherState>,
+    /// Tier 2.7 agenda feeds (calendar today, sub-tab, viewed month,
+    /// tasks, draft, timer view + state).
+    pub now_ymd: (i32, u32, u32),
+    pub agenda_subtab: usize,
+    pub cal: (i32, u32),
+    pub tasks: Vec<crate::agenda::TaskItem>,
+    pub agenda_draft: String,
+    pub sw_view: bool,
+    pub timer: crate::agenda::FocusTimer,
 }
 
 /// Tier 2.6 weather snapshot fields the card renders (WeatherWidget.qml
@@ -169,6 +178,28 @@ impl ControlCenterPanel {
         panel
     }
 
+    /// The live Agenda task entry text (None when the agenda tab is not
+    /// showing the tasks sub-tab, or the walk fails). The daemon syncs its
+    /// `agenda.draft` from this before every refresh.
+    pub fn agenda_entry_text(&mut self) -> Option<String> {
+        if self.current_tab != 3 {
+            return None;
+        }
+        let walk = self
+            .body
+            .child
+            .as_any()
+            .downcast_mut::<VBox>()
+            .and_then(|wrap| wrap.children.first_mut())
+            .and_then(|content| {
+                content
+                    .as_any()
+                    .downcast_mut::<crate::agenda::AgendaTab>()
+                    .map(|tab| tab.entry_text())
+            });
+        walk
+    }
+
     /// Rebuild from a fresh snapshot, KEEPING the scroll offset (data
     /// refreshes must not move the viewport). Switching tabs resets it.
     pub fn rebuild(&mut self, theme: &Theme, data: &ControlData, tab: usize) {
@@ -212,6 +243,21 @@ impl ControlCenterPanel {
         // column gave the body (14 px + the tab's own 8 px padding)
         let content: Box<dyn Widget> = if self.current_tab == 0 {
             Box::new(controls_tab(t, data))
+        } else if self.current_tab == 3 {
+            // Tier 2.7 agenda (custom widget: the entry text is readable
+            // back through agenda_entry_text for the draft sync)
+            Box::new(crate::agenda::AgendaTab::new(
+                t,
+                &crate::agenda::AgendaData {
+                    today: data.now_ymd,
+                    subtab: data.agenda_subtab,
+                    cal: data.cal,
+                    tasks: data.tasks.clone(),
+                    draft: data.agenda_draft.clone(),
+                    sw_view: data.sw_view,
+                    timer: data.timer.clone(),
+                },
+            ))
         } else {
             Box::new(placeholder_tab(t, self.current_tab))
         };
@@ -1117,11 +1163,18 @@ pub fn control_data(shell: &crate::daemon::Shell) -> ControlData {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         weather: shell.system_snapshot.get("weather").map(weather_state),
+        now_ymd: crate::daemon::today_ymd(),
+        agenda_subtab: shell.agenda.subtab,
+        cal: (shell.agenda.cal_year, shell.agenda.cal_month),
+        tasks: crate::agenda::tasks_from_settings(&shell.settings.values),
+        agenda_draft: shell.agenda.draft.clone(),
+        sw_view: shell.agenda.sw_view,
+        timer: shell.focus_timer.clone(),
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::click_ids;
     use lme_ui::anim::Animator;
@@ -1131,7 +1184,8 @@ mod tests {
     use lme_ui::theme::Palette;
     use lme_ui::widgets::UiEvent;
 
-    fn data() -> ControlData {
+    /// Shared fixture (also used by the agenda position tests).
+    pub(crate) fn data() -> ControlData {
         ControlData {
             now_hm: "12:34".into(),
             now_date: "Mon, Oct 12".into(),
@@ -1199,6 +1253,13 @@ mod tests {
                 ],
                 error: String::new(),
             }),
+            now_ymd: (2026, 10, 13),
+            agenda_subtab: 0,
+            cal: (2026, 10),
+            tasks: vec![],
+            agenda_draft: String::new(),
+            sw_view: false,
+            timer: crate::agenda::FocusTimer::default(),
         }
     }
 

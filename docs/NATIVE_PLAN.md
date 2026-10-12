@@ -80,7 +80,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 | 2.4 | Wi-Fi (NetworkManager) | ControlActions::wifi_toggle | e2e control_wifi_tile_toggles_radio | partial (radio toggle done; WifiPanel connection list = TIER-2 completion) |
 | 2.5 | Power profiles / idle inhibit / night light | ControlActions + held children | e2e control_stay_awake_night_light_and_power_profile | done (profile row + stay-awake inhibitor + night-light child; swayidle manager itself = idle-management row) |
 | 2.6 | Weather UI | control_center.rs weather card + daemon probe_weather | e2e control_weather_card_and_refresh + golden (VLM) | done (weather card first on the Controls tab per the legacy controlLayout order; WeatherClient feed probed visibility-gated like BlueZ; refresh button = legacy weatherRefresh; monochrome presentation glyphs for the condition icons; pulled the KI-3 Flickable forward — the weather card pushed the tab past 800px outputs) |
-| 2.7 | Calendar / to-do / timer | — | — | missing |
+| 2.7 | Calendar / to-do / timer | agenda.rs (AgendaTab + AgendaState + FocusTimer) | e2e agenda_calendar_golden / agenda_tasks_crud_through_typing / agenda_timer_start_pause_deterministic | done (three sub-tabs; the frozen `tasks` pref full CRUD through the REAL typing path — mock keys to a focused TextInput to Submit; the entry draft survives the 5 s in-place refreshes via a panel readback walk; FocusTimer as daemon state with a 1 Hz chain only while active + local notification on completion; pause/tick CEIL like the QML) |
 | 2.8 | Clipboard history UI | — | — | missing (store done in Phase 1) |
 | 2.9 | Activity island (MPRIS, timer, recorder) | — | — | missing |
 | 2.10 | Workspace board | — | — | missing |

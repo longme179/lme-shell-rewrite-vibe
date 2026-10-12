@@ -5,6 +5,7 @@
 //!   lme-shell settings      separate settings window (Tier 3 — stub)
 //!   lme-shell --version
 
+mod agenda;
 mod bar;
 mod click_ids;
 mod control_center;
