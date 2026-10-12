@@ -100,7 +100,7 @@ impl Widget for CenteredPanel {
         // for every child whenever the panel sat at a non-zero offset —
         // i.e. always (both panels are centered). Regression-tested in
         // tests/panels.rs with a button at a non-zero panel offset.
-        if let InputEvent::Down(p) = ev {
+        if let InputEvent::Down { pos: p, .. } = ev {
             if !self.panel.rect().contains(*p) {
                 // Click on the dimmed backdrop: close the panel (legacy
                 // QML tap-outside-to-close).
@@ -570,14 +570,17 @@ impl Widget for LauncherPanel {
                     return true;
                 }
             }
-            InputEvent::Down(p) => {
+            InputEvent::Down { pos: p, .. } => {
                 // consume the press so the search field doesn't grab focus
                 // when a result row is clicked
                 if self.row_at(*p).is_some() {
                     return true;
                 }
             }
-            InputEvent::Up(p) => {
+            InputEvent::Up {
+                pos: p,
+                button: lme_ui::widgets::PointerButton::Primary,
+            } => {
                 if let Some(index) = self.row_at(*p) {
                     self.selected = index;
                     self.hovered = Some(index);
@@ -877,8 +880,8 @@ mod tests {
             button_rect.x + button_rect.w / 2.0,
             button_rect.y + button_rect.h / 2.0,
         );
-        panel.deliver(&mut c, &InputEvent::Down(center), None);
-        panel.deliver(&mut c, &InputEvent::Up(center), None);
+        panel.deliver(&mut c, &InputEvent::down(center), None);
+        panel.deliver(&mut c, &InputEvent::up(center), None);
         assert!(
             matches!(c.queue.as_slice(), [UiEvent::Click(TEST_BUTTON)]),
             "click at the button's surface position must hit the button; queue: {:?}",
@@ -905,7 +908,7 @@ mod tests {
         };
         panel.layout(&mut c, Rect::new(0.0, 0.0, 1280.0, 800.0));
         // top-left corner: far outside the centered panel
-        let consumed = panel.deliver(&mut c, &InputEvent::Down(Point::new(5.0, 5.0)), None);
+        let consumed = panel.deliver(&mut c, &InputEvent::down(Point::new(5.0, 5.0)), None);
         assert!(consumed);
         assert!(matches!(c.queue.as_slice(), [UiEvent::Dismiss]));
     }
@@ -956,8 +959,8 @@ mod tests {
         c.queue.clear();
 
         // click row 1 -> activate + selection moves
-        panel.deliver(&mut c, &InputEvent::Down(row1), None);
-        panel.deliver(&mut c, &InputEvent::Up(row1), None);
+        panel.deliver(&mut c, &InputEvent::down(row1), None);
+        panel.deliver(&mut c, &InputEvent::up(row1), None);
         assert_eq!(panel.selected, 1);
         assert!(matches!(
             c.queue.as_slice(),

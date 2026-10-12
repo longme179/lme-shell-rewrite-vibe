@@ -444,7 +444,7 @@ impl Widget for ToastCard {
     fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, _target: Option<u64>) -> bool {
         // The × area and the action buttons are the interactive zones.
         match ev {
-            InputEvent::Move(p) | InputEvent::Down(p) | InputEvent::Up(p) => {
+            InputEvent::Move(p) | InputEvent::Down { pos: p, .. } | InputEvent::Up { pos: p, .. } => {
                 let close_rect = Rect::new(
                     self.rect.x + self.rect.w - 46.0,
                     self.rect.y + 6.0,
@@ -452,14 +452,14 @@ impl Widget for ToastCard {
                     28.0,
                 );
                 if close_rect.contains(*p) {
-                    if matches!(ev, InputEvent::Up(_)) {
+                    if matches!(ev, InputEvent::Up { .. }) {
                         ctx.queue
                             .push(UiEvent::Click(toast_dismiss_id(self.notif.id)));
                         ctx.request_repaint();
                     }
                     return true;
                 }
-                if let InputEvent::Up(p) = ev {
+                if let InputEvent::Up { pos: p, .. } = ev {
                     // action pill hit-test (they were laid out left to right)
                     let mut x = self.rect.x + 16.0;
                     let mut y = self.rect.y + 58.0;
@@ -477,7 +477,7 @@ impl Widget for ToastCard {
                         x += w + 8.0;
                     }
                 }
-                matches!(ev, InputEvent::Down(_) | InputEvent::Up(_))
+                matches!(ev, InputEvent::Down { .. } | InputEvent::Up { .. })
             }
             _ => false,
         }

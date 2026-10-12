@@ -44,11 +44,72 @@ impl KeyInput {
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     Move(Point),
-    Down(Point),
-    Up(Point),
+    /// Pointer press. `button` distinguishes primary (click) from
+    /// secondary (context menus) and middle (aux actions).
+    Down {
+        pos: Point,
+        button: PointerButton,
+    },
+    Up {
+        pos: Point,
+        button: PointerButton,
+    },
     Leave,
     Scroll(Point, f32),
     Key(KeyInput),
+}
+
+impl InputEvent {
+    /// Left-button press at `pos` (programmatic synthesis / tests).
+    pub fn down(pos: Point) -> Self {
+        Self::Down {
+            pos,
+            button: PointerButton::Primary,
+        }
+    }
+    /// Left-button release at `pos` (programmatic synthesis / tests).
+    pub fn up(pos: Point) -> Self {
+        Self::Up {
+            pos,
+            button: PointerButton::Primary,
+        }
+    }
+    /// The point a pointer event carries, if any.
+    pub fn pos(&self) -> Option<Point> {
+        match self {
+            Self::Move(p) | Self::Down { pos: p, .. } | Self::Up { pos: p, .. } => Some(*p),
+            Self::Scroll(p, _) => Some(*p),
+            Self::Leave | Self::Key(_) => None,
+        }
+    }
+    /// The pointer button of a press/release (None for other events).
+    pub fn button(&self) -> Option<PointerButton> {
+        match self {
+            Self::Down { button, .. } | Self::Up { button, .. } => Some(*button),
+            _ => None,
+        }
+    }
+}
+
+/// Mouse buttons, translated from evdev codes at the Wayland boundary
+/// (0x110 BTN_LEFT, 0x111 BTN_RIGHT, 0x112 BTN_MIDDLE).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerButton {
+    Primary,
+    Secondary,
+    Middle,
+    Other,
+}
+
+impl PointerButton {
+    pub fn from_button_code(code: u32) -> Self {
+        match code {
+            0x110 => Self::Primary,
+            0x111 => Self::Secondary,
+            0x112 => Self::Middle,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// Events produced by interactive widgets; drained by the shell after input
@@ -282,8 +343,8 @@ impl Widget for HBox {
         for c in self.children.iter_mut().rev() {
             let hit = match ev {
                 InputEvent::Move(p)
-                | InputEvent::Down(p)
-                | InputEvent::Up(p)
+                | InputEvent::Down { pos: p, .. }
+                | InputEvent::Up { pos: p, .. }
                 | InputEvent::Scroll(p, _) => c.rect().contains(*p),
                 InputEvent::Leave => true,
                 InputEvent::Key(_) => false,
@@ -410,8 +471,8 @@ impl Widget for VBox {
         for c in self.children.iter_mut().rev() {
             let hit = match ev {
                 InputEvent::Move(p)
-                | InputEvent::Down(p)
-                | InputEvent::Up(p)
+                | InputEvent::Down { pos: p, .. }
+                | InputEvent::Up { pos: p, .. }
                 | InputEvent::Scroll(p, _) => c.rect().contains(*p),
                 InputEvent::Leave => true,
                 InputEvent::Key(_) => false,
@@ -819,7 +880,10 @@ impl Widget for Button {
                 }
                 over
             }
-            InputEvent::Down(p) => {
+            InputEvent::Down {
+                pos: p,
+                button: PointerButton::Primary,
+            } => {
                 if self.rect.contains(*p) {
                     self.pressed = true;
                     ctx.request_repaint();
@@ -828,7 +892,10 @@ impl Widget for Button {
                     false
                 }
             }
-            InputEvent::Up(p) => {
+            InputEvent::Up {
+                pos: p,
+                button: PointerButton::Primary,
+            } => {
                 let was = self.pressed;
                 self.pressed = false;
                 if was && self.rect.contains(*p) {
@@ -853,6 +920,14 @@ impl Widget for Button {
                 false
             }
             InputEvent::Scroll(_, _) => false,
+            // non-primary buttons neither press nor click; the release of a
+            // stray press still clears the pressed state
+            InputEvent::Down { .. } => false,
+            InputEvent::Up { .. } => {
+                let was = self.pressed;
+                self.pressed = false;
+                was
+            }
         }
     }
     fn rect(&self) -> Rect {
@@ -988,9 +1063,9 @@ impl Widget for Switch {
                 self.hover = self.rect.contains(*p);
                 self.hover
             }
-            InputEvent::Up(p) | InputEvent::Down(p) => {
+            InputEvent::Up { pos: p, .. } | InputEvent::Down { pos: p, .. } => {
                 if self.rect.contains(*p) {
-                    if matches!(ev, InputEvent::Up(_)) {
+                    if matches!(ev, InputEvent::Up { .. }) {
                         self.on = !self.on;
                         ctx.queue.push(UiEvent::Toggle(self.id, self.on));
                         ctx.request_repaint();
@@ -1096,7 +1171,7 @@ impl Widget for Slider {
             return false;
         }
         match ev {
-            InputEvent::Down(p) => {
+            InputEvent::Down { pos: p, .. } => {
                 if self.rect.contains(*p) {
                     self.drag = true;
                     self.value = self.value_at(p.x);
@@ -1117,7 +1192,7 @@ impl Widget for Slider {
                     self.rect.contains(*p)
                 }
             }
-            InputEvent::Up(_) => {
+            InputEvent::Up { .. } => {
                 let was = self.drag;
                 self.drag = false;
                 was
@@ -1264,9 +1339,9 @@ impl Widget for TextInput {
             return false;
         }
         match ev {
-            InputEvent::Down(p) | InputEvent::Up(p) => {
+            InputEvent::Down { pos: p, .. } | InputEvent::Up { pos: p, .. } => {
                 if self.rect.contains(*p) {
-                    if matches!(ev, InputEvent::Down(_)) && ctx.focused != Some(self.id) {
+                    if matches!(ev, InputEvent::Down { .. }) && ctx.focused != Some(self.id) {
                         ctx.queue.push(UiEvent::Focus(self.id));
                     }
                     true
@@ -1635,8 +1710,8 @@ mod tests {
         });
         // click inside first button
         let clicked = with_ctx(&mut parts, |mut c| {
-            let mut consumed = row.deliver(&mut c, &InputEvent::Down(Point::new(10.0, 20.0)), None);
-            consumed |= row.deliver(&mut c, &InputEvent::Up(Point::new(10.0, 20.0)), None);
+            let mut consumed = row.deliver(&mut c, &InputEvent::down(Point::new(10.0, 20.0)), None);
+            consumed |= row.deliver(&mut c, &InputEvent::up(Point::new(10.0, 20.0)), None);
             consumed
         });
         assert!(clicked);
@@ -1650,8 +1725,8 @@ mod tests {
             b.layout(&mut c, Rect::new(0.0, 0.0, 60.0, 30.0))
         });
         let events = with_ctx(&mut parts, |mut c| {
-            b.deliver(&mut c, &InputEvent::Down(Point::new(30.0, 15.0)), None);
-            b.deliver(&mut c, &InputEvent::Up(Point::new(30.0, 15.0)), None);
+            b.deliver(&mut c, &InputEvent::down(Point::new(30.0, 15.0)), None);
+            b.deliver(&mut c, &InputEvent::up(Point::new(30.0, 15.0)), None);
             std::mem::take(c.queue)
         });
         assert!(matches!(events.as_slice(), [UiEvent::Click(7)]));
@@ -1865,8 +1940,8 @@ mod wheel_tests {
         assert!(c.queue.is_empty());
 
         // clicks pass through to the child button
-        region.deliver(&mut c, &InputEvent::Down(Point::new(130.0, 215.0)), None);
-        region.deliver(&mut c, &InputEvent::Up(Point::new(130.0, 215.0)), None);
+        region.deliver(&mut c, &InputEvent::down(Point::new(130.0, 215.0)), None);
+        region.deliver(&mut c, &InputEvent::up(Point::new(130.0, 215.0)), None);
         assert!(matches!(c.queue.as_slice(), [UiEvent::Click(7)]));
     }
 
@@ -1910,12 +1985,12 @@ mod wheel_tests {
         icon.layout(&mut c, Rect::new(0.0, 0.0, icon_w, 30.0));
         icon.deliver(
             &mut c,
-            &InputEvent::Down(Point::new(icon_w / 2.0, 15.0)),
+            &InputEvent::down(Point::new(icon_w / 2.0, 15.0)),
             None,
         );
         icon.deliver(
             &mut c,
-            &InputEvent::Up(Point::new(icon_w / 2.0, 15.0)),
+            &InputEvent::up(Point::new(icon_w / 2.0, 15.0)),
             None,
         );
         assert!(matches!(c.queue.as_slice(), [UiEvent::Click(2)]));

@@ -1067,25 +1067,31 @@ impl PointerHandler for UiState {
                         );
                     }
                 }
-                PointerEventKind::Press { .. } => {
+                PointerEventKind::Press { button, .. } => {
                     if let Some(w) = self.pointer_window {
                         self.dispatch_pointer(
                             w,
-                            InputEvent::Down(crate::geom::Point::new(
-                                event.position.0 as f32,
-                                event.position.1 as f32,
-                            )),
+                            InputEvent::Down {
+                                pos: crate::geom::Point::new(
+                                    event.position.0 as f32,
+                                    event.position.1 as f32,
+                                ),
+                                button: crate::widgets::PointerButton::from_button_code(*button),
+                            },
                         );
                     }
                 }
-                PointerEventKind::Release { .. } => {
+                PointerEventKind::Release { button, .. } => {
                     if let Some(w) = self.pointer_window {
                         self.dispatch_pointer(
                             w,
-                            InputEvent::Up(crate::geom::Point::new(
-                                event.position.0 as f32,
-                                event.position.1 as f32,
-                            )),
+                            InputEvent::Up {
+                                pos: crate::geom::Point::new(
+                                    event.position.0 as f32,
+                                    event.position.1 as f32,
+                                ),
+                                button: crate::widgets::PointerButton::from_button_code(*button),
+                            },
                         );
                     }
                 }
