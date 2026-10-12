@@ -1152,7 +1152,9 @@ pub fn axis_lines(scroll: &AxisScroll, acc: &mut f64) -> f32 {
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("LME_SHELL_PERF").is_some_and(|v| v != "0"))
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("LME_SHELL_PERF").is_some_and(|v| !v.is_empty() && v != "0")
+    })
 }
 
 impl ProvidesRegistryState for UiState {

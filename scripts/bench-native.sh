@@ -16,13 +16,15 @@ run_daemon () { # $1 = socket, $2 = duration, extra args after
   local sock="$1"; shift
   local dur="$1"; shift
   XDG_RUNTIME_DIR="$T/runtime" WAYLAND_DISPLAY="$sock" \
-    "$HOME/target/release/mock-compositor" --mode idle --duration "$dur" \
+    "$HOME/target/release/mock-compositor" --mode "${MOCK_MODE:-idle}" \
+    --fps "${MOCK_FPS:-120}" --duration "$dur" \
     --output 1280x800 --socket "$sock" "$@" > "$T/mock.log" 2>&1 &
   MOCK=$!
   sleep 0.4
   XDG_RUNTIME_DIR="$T/runtime" XDG_CONFIG_HOME="$T/config" HOME="$T" \
     WAYLAND_DISPLAY="$sock" LME_SHELL_FAKE_STATE="$T/fake.json" \
     LME_SHELL_FAKE_STATE_SYSTEM="$T/fakesys.json" \
+    LME_SHELL_PERF="${LME_SHELL_PERF:-}" \
     "${LME_SHELL_BIN:-$HOME/target/release/lme-shell}" daemon --dry-run "$@" > "$T/shell.log" 2>&1 &
   DAEMON=$!
   # wait for the daemon socket
@@ -78,23 +80,49 @@ stop_all
 COLD=$(grep -o 'bind->map [0-9]*ms' "$T/mock.log" | head -1 | grep -o '[0-9]*')
 echo "cold_start_bind_to_map_ms=$COLD"
 
-# ---- 3. Animation: reveal at 120 Hz, fps from SUMMARY + p99 render ------
+# ---- 3. Animation: reveal paced on a vsync grid (Step 0b) ---------------
+# The mock's animate mode paces frame callbacks on a vsync grid at --fps:
+# every callback is due at the NEXT grid tick after the commit (the scanout
+# clock, not commit time). FRAME log lines carry the surface namespace, so
+# the fps below is measured INSIDE the reveal window (first to last
+# lme-power frame callback), not diluted by idle time.
 echo '{"animations": true}' > "$T/config/lme-shell/settings.json"
-LME_SHELL_PERF=1 run_daemon bench-anim 8
+MOCK_MODE=animate MOCK_FPS=60 LME_SHELL_PERF=1 run_daemon bench-anim 8
+sleep 1.5
+XDG_RUNTIME_DIR="$T/runtime" "${LME_SHELL_BIN:-$HOME/target/release/lme-shell}" msg toggle power > /dev/null
+sleep 6.3
+# let the mock reach its 8 s duration so it logs a clean SUMMARY
+wait $MOCK 2>/dev/null
+stop_all
+# render stats from the daemon perf log
+P99=$(grep -o 'ms=[0-9.]*' "$T/shell.log" | grep -o '[0-9.]*' | sort -n | awk '{a[NR]=$1} END {print (NR>0) ? a[int((NR*99+99)/100)] : ""}')
+echo "anim_render_count=$(grep -c RENDER "$T/shell.log") p99_render_ms=$P99"
+# reveal-window fps from the mock FRAME lines (power-menu surface only)
+grep -o '^\[ *[0-9]*ms\] \[FRAME\] lme-power' "$T/mock.log" | grep -o '[0-9]*ms' > "$T/frames.txt"
+N=$(wc -l < "$T/frames.txt")
+if [ "$N" -gt 1 ]; then
+  FIRST=$(head -1 "$T/frames.txt" | grep -o '[0-9]*')
+  LAST=$(tail -1 "$T/frames.txt" | grep -o '[0-9]*')
+  SPAN=$((LAST - FIRST))
+  if [ "$SPAN" -gt 0 ]; then
+    echo "reveal_frames=$N span_ms=$SPAN reveal_fps=$(( (N - 1) * 1000 / SPAN ))"
+  fi
+fi
+# pacing health from the mock SUMMARY
+grep -o '"delivered_fps":[0-9.]*' "$T/mock.log" | head -1
+grep -o '"late_frames":[0-9]*' "$T/mock.log" | head -1
+grep -o '"dropped_frames":[0-9]*' "$T/mock.log" | head -1
+# and the old unthrottled ceiling number (callbacks fire immediately)
+MOCK_MODE=idle LME_SHELL_PERF=1 run_daemon bench-ceiling 8
 sleep 1.5
 XDG_RUNTIME_DIR="$T/runtime" "${LME_SHELL_BIN:-$HOME/target/release/lme-shell}" msg toggle power > /dev/null
 sleep 5
 stop_all
-# p99 render time from the daemon perf log (LME_SHELL_PERF set via run_daemon "$@")
-P99=$(grep -o 'ms=[0-9.]*' "$T/shell.log" | grep -o '[0-9.]*' | sort -n | awk '{a[NR]=$1} END {if (NR>0) print a[int(NR*0.99)+((NR*0.99<1)?0:0)]; if (NR==0) print ""}')
-P99=$(grep -o 'ms=[0-9.]*' "$T/shell.log" | grep -o '[0-9.]*' | sort -n | awk '{a[NR]=$1} END {print (NR>0) ? a[int((NR*99+99)/100)] : ""}')
-echo "anim_render_count=$(grep -c RENDER "$T/shell.log") p99_render_ms=$P99"
-# With --mode idle frame callbacks fire immediately, so the animation runs
-# unthrottled; the fps here measures the render loop's ceiling, not vsync.
-FRAMES=$(grep -o '"frames_fired":[0-9]*' "$T/mock.log" | head -1 | cut -d: -f2)
-DUR_MS=$(grep -o '"duration_ms":[0-9]*' "$T/mock.log" | head -1 | cut -d: -f2)
-if [ -n "$FRAMES" ] && [ -n "$DUR_MS" ] && [ "$DUR_MS" -gt 0 ]; then
-  echo "anim_frames_fired=$FRAMES over ${DUR_MS}ms"
+CEIL_N=$(grep -o '^\[ *[0-9]*ms\] \[FRAME\] lme-power' "$T/mock.log" | grep -o '[0-9]*ms' | sed 's/ms//' > "$T/frames.txt"; wc -l < "$T/frames.txt")
+if [ "$CEIL_N" -gt 1 ]; then
+  FIRST=$(head -1 "$T/frames.txt"); LAST=$(tail -1 "$T/frames.txt")
+  SPAN=$((LAST - FIRST))
+  [ "$SPAN" -gt 0 ] && echo "unthrottled_reveal_frames=$CEIL_N span_ms=$SPAN ceiling_fps=$(( (CEIL_N - 1) * 1000 / SPAN ))"
 fi
 
 echo "== done (append these numbers to docs/PERF.md) =="

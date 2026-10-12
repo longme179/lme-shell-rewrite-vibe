@@ -11,11 +11,11 @@ against the headless mock compositor at 1280×800 with one output, bar only.
 
 | Metric | Result | Target | Note |
 |---|---|---|---|
-| CPU over 60 s | **2 ticks** (HZ=100 → 0.02 s) | zero CPU ticks | the 2 ticks are the 30 s battery-sysfs probe and the minute-boundary clock rebuild (one bar re-render each); between those events the process is fully asleep |
+| CPU over 60 s | **0–2 ticks** (HZ=100; latest run 0) | zero CPU ticks | the 30 s battery-sysfs probe and the minute-boundary clock rebuild each cost ≤ 1 tick; between those events the process is fully asleep |
 | Wakeups over 60 s | **9** (0.15/s avg, all voluntary) | ≤ 1/s | calloop edge/level sources: wayland fd, ipc listener, inotify, chained one-shot timers |
 | Renders in steady state | 0 per second; 1 per rebuild event | — | battery probe every 30 s, clock at minute boundaries (animations disabled in this config) |
-| Daemon idle RSS | **11.6 MB** | ≤ 40 MB (+15/output) | includes FontBook (vendored Roboto + glyph caches), widget trees, shm pool |
-| Cold start (client bind → first bar frame) | **10 ms** | fast | includes layer-shell round-trips and first render |
+| Daemon idle RSS | **11.6–11.9 MB** | ≤ 40 MB (+15/output) | includes FontBook (vendored Roboto + glyph caches), widget trees, shm pool |
+| Cold start (client bind → first bar frame) | **9–12 ms** | fast | includes layer-shell round-trips and first render |
 
 Debug-build numbers for comparison: idle 4 ticks/60 s, RSS 19.0 MB,
 cold start 47 ms, render p99 72 ms — the per-pixel CPU rasterizer needs the
@@ -23,26 +23,38 @@ release profile (as expected).
 
 ## Animation (panel reveal, full 1280×800 overlay redraw) — release build
 
-Reveal of the power menu (460 ms eased tween, frame-callback driven, mock
-compositor pacing at `--fps 120`):
+**Step 0b (vsync-grid pacing):** the mock compositor's animate mode now
+paces frame callbacks on a vsync grid — every callback is due at the NEXT
+grid tick after the commit (the scanout clock, not commit time) — and
+counts late (> half-interval) and dropped (commit while a callback was
+still unfired) frames. Reveal of the power menu (450 ms eased tween,
+frame-callback driven), fps measured inside the reveal window from the
+mock's per-callback FRAME log lines:
+
+| Pacing | Frames / window | Delivered fps | Late | Dropped |
+|---|---|---|---|---|
+| 60 Hz grid | 28 / 450 ms | **60.0** | **0** | **0** |
+| 120 Hz grid | 55 / 450 ms | **120.0** | **0** | **0** |
+| unthrottled (ceiling) | 117–129 / ~450 ms | ~259–283 | — | — |
+
+Render time during the reveal (LME_SHELL_PERF, ~120 samples):
 
 | Metric | Result |
 |---|---|
-| Frames rendered during reveal | 38 |
-| Render time median | **2.2 ms** |
-| Render time p95 | **2.5 ms** |
-| Render time p99 | **3.6 ms** |
-| Render time max | 9.3 ms (first frames, cache warm-up) |
+| Render time median | **2.1–2.2 ms** |
+| Render time p95 | **3.1 ms** |
+| Render time p99 | **6.6 ms** (first-frames warm-up: buffer alloc + shadow cache) |
+| Render time max | 12.8 ms (very first frame) |
 | Renders after reveal completed | **0** (verified over a 3 s window) |
 
-Frame budget at 120 Hz is 8.3 ms; every steady render is ≥ 2× under budget,
-so the client is never the limiter. The observed 38 frames / 460 ms ≈ 83 fps
-is the mock compositor's callback pacing, not client cost — **the 115+ fps
-target could not be honestly measured against this mock and needs real
-niri hardware** (mission rule: never claim untested performance).
-
-Unthrottled (mock fires callbacks immediately) the same reveal renders at
-~220 frames/s, i.e. the render loop ceiling on this vCPU is far above 120 Hz.
+Frame budget is 8.3 ms at 120 Hz: every steady render is ≥ 2.5× under
+budget, p99 included. The client sustains a full 120 fps reveal with zero
+late and zero dropped frames against the paced mock — the earlier
+"115+ fps could not be honestly measured" caveat is resolved at the mock
+level. What this still does **not** prove: real scanout on actual display
+hardware (compositor scheduling, GPU page flips, display refresh). The
+mock's grid is a 1 ms-tick software clock; real niri numbers remain a
+real-machine checklist item.
 
 ## Memory notes
 

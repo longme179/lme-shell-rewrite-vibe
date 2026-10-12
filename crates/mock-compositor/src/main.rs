@@ -225,12 +225,15 @@ impl State {
         let mut i = 0;
         while i < self.pending_frames.len() {
             if self.pending_frames[i].1 <= Instant::now() {
-                let (cb, due, _) = self.pending_frames.remove(i);
+                let (cb, due, surf) = self.pending_frames.remove(i);
                 if Instant::now() > due + half {
                     self.late_frames += 1;
                 }
                 cb.done(time);
                 self.frames_fired += 1;
+                // one line per delivered callback: lets the bench compute
+                // fps inside a specific window (e.g. a panel reveal)
+                self.slog("FRAME", &self.surface_ns(&surf));
             } else {
                 i += 1;
             }
@@ -438,6 +441,17 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Namespace of a surface's layer (for per-frame log lines), or
+    /// "surface" when it has none (e.g. cursors).
+    fn surface_ns(&self, id: &ObjectId) -> String {
+        self.surfaces
+            .get(id)
+            .and_then(|r| r.layer.as_ref())
+            .and_then(|lid| self.layers.get(lid))
+            .map(|l| l.namespace.clone())
+            .unwrap_or_else(|| "surface".to_string())
     }
 
     fn focus_desc(&self) -> String {

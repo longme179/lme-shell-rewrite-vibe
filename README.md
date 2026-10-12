@@ -28,8 +28,8 @@ with this yet.
 | Power actions: logind D-Bus (Suspend/Reboot/PowerOff), `swaylock --color 22212c`, `niri msg action quit --skip-confirmation` | done, dry-run tested | unit (dry-run executor) | **yes — logind/swaylock/niri calls** |
 | OSD popups + status toasts (auto-expiry) | done | e2e | no |
 | settings.json + palette.json hot reload (inotify), upstream-added keys preserved on writes | done | unit (tmp dirs) | no |
-| Idle cost: 2 CPU ticks / 60 s, 0.15 wakeups/s, 11.6 MB RSS, 10 ms cold start | done | bench (docs/PERF.md) | re-measure on laptop |
-| Panel reveal animation: frame-callback driven, render p95 2.5 ms | done | bench | fps at real refresh rate |
+| Idle cost: 0–2 CPU ticks / 60 s, 0.15 wakeups/s, 11.9 MB RSS, 9–12 ms cold start | done | bench (docs/PERF.md) | re-measure on laptop |
+| Panel reveal animation: frame-callback driven, render p95 3.1 ms | done | bench (mock vsync-grid: 120.0 fps reveal, 0 late, 0 dropped) | fps at real scanout |
 | Notification daemon (toasts/history/DND), system tray, control center, clipboard UI, settings window, Wi-Fi/Bluetooth panels, night light, weather UI, activity island | **missing (Tier 2/3)** | — | — |
 | Backend services (niri IPC, prefs with cross-writer locking, weather, clipboard store, app scan, charging) | done (frozen Phase 0 contract) | 50 golden parity tests vs the Python backend | no |
 
@@ -109,11 +109,13 @@ the Phase 0 freeze are preserved on writes) and
 ## Measured performance (cloud sandbox — not laptop numbers)
 
 See [`docs/PERF.md`](docs/PERF.md) for method and full tables. Release build,
-1280×800, one output, bar only: **2 CPU ticks over 60 s** (the 30 s battery
-sysfs read and the minute clock), **0.15 wakeups/s**, **11.6 MB RSS**,
-**10 ms** bind→first-frame, panel reveal renders at **p95 2.5 ms** (8.3 ms
-budget at 120 Hz). The legacy QML shell idled at 120–190 MB with ~10
-subprocesses per 2 s poll.
+1280×800, one output, bar only: **0–2 CPU ticks over 60 s** (the 30 s battery
+sysfs read and the minute clock), **0.15 wakeups/s**, **11.9 MB RSS**,
+**9–12 ms** bind→first-frame. Against the mock's vsync-grid pacing the
+panel reveal delivers **60.0 fps at a 60 Hz grid and 120.0 fps at a 120 Hz
+grid with zero late and zero dropped frames** (render median 2.1 ms, p99
+6.6 ms; 8.3 ms budget at 120 Hz). The legacy QML shell idled at 120–190 MB
+with ~10 subprocesses per 2 s poll.
 
 ## Real-machine validation checklist (do these first)
 

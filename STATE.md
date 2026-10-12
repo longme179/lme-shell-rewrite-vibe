@@ -29,10 +29,19 @@ captures). **D19: found + fixed that launcher results were never populated
 on open/typing** (old golden was vacuously empty). Goldens regenerated
 deliberately (bar pill visuals, real launcher content, 4 new).
 
-**Next: Step 0b** (vsync-paced fps/dropped/p99 during a panel reveal →
-docs/PERF.md), then Step 1 Tier 1 finish (1.9 notifications daemon, 1.11
-tray, 1.2 MPRIS feed, niri actions) → TIER-1B delivery → Tier 2 in the
-stated order → TIER-2 → Tier 3 → TIER-3 → Tier 4 → FINAL. Checkpoints lean;
+**Step 0b DONE (vsync-paced measurements, commit after 69f34e5):** mock
+FRAME-per-callback logging; bench section 3 rewritten for the vsync grid
+(MOCK_MODE/MOCK_FPS). Results (release, cloud CPU): reveal delivers
+**60.0 fps at a 60 Hz grid and 120.0 fps at a 120 Hz grid, 0 late,
+0 dropped**; render median 2.1 ms, p95 3.1 ms, p99 6.6 ms (first-frame
+warm-up max 12.8 ms); unthrottled ceiling ~260–280 fps; idle 0–2 ticks/60 s,
+9 wakeups, 11.9 MB RSS, 9–12 ms cold start. PERF.md + README updated — the
+old "115+ fps not honestly measurable" caveat is resolved at the mock level
+(real scanout stays on the real-machine checklist).
+
+**Next: Step 1 Tier 1 finish** (1.9 notifications daemon, 1.11 tray,
+1.2 MPRIS feed, niri actions) → TIER-1B delivery → Tier 2 in the stated
+order → TIER-2 → Tier 3 → TIER-3 → Tier 4 → FINAL. Checkpoints lean;
 CKPT_FULL=1 only at FINAL. gh-sync runs from checkpoint.sh after every
 checkpoint AND directly every ~10 min of work (Amendment 3 cadence).
 
