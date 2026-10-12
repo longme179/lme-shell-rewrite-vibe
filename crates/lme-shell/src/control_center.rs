@@ -27,6 +27,8 @@ pub mod ids {
     pub const TILE_BLUETOOTH: u64 = 0x8031;
     pub const TILE_DND: u64 = 0x8032;
     pub const TILE_MOTION: u64 = 0x8033;
+    pub const TILE_STAY_AWAKE: u64 = 0x8034;
+    pub const TILE_NIGHT_LIGHT: u64 = 0x8035;
     pub const VOL_MUTE: u64 = 0x8040;
     pub const VOL_SLIDER: u64 = 0x8041;
     pub const BRIGHT_SLIDER: u64 = 0x8042;
@@ -70,6 +72,9 @@ pub struct ControlData {
     pub now_date: String,
     pub dnd: bool,
     pub animations: bool,
+    pub stay_awake: bool,
+    pub night_light: bool,
+    pub night_light_temp: i64,
     pub wifi: Option<WifiState>,
     pub bluetooth: Option<BluetoothState>,
     pub audio: Option<AudioState>,
@@ -335,6 +340,33 @@ fn controls_tab(t: &Theme, d: &ControlData) -> VBox {
                 &bt_detail,
                 bt.enabled,
                 t.purple,
+            )))),
+    );
+    body = body.push(
+        HBox::new(12.0)
+            .push(lme_ui::widgets::Fill::new(Box::new(tile(
+                t,
+                ids::TILE_STAY_AWAKE,
+                "Stay awake",
+                if d.stay_awake {
+                    "Idle sleep inhibited"
+                } else {
+                    "Normal idle behavior"
+                },
+                d.stay_awake,
+                t.green,
+            ))))
+            .push(lme_ui::widgets::Fill::new(Box::new(tile(
+                t,
+                ids::TILE_NIGHT_LIGHT,
+                "Night Light",
+                &if d.night_light {
+                    format!("{} K", d.night_light_temp)
+                } else {
+                    "Turned off".to_string()
+                },
+                d.night_light,
+                t.yellow,
             )))),
     );
     body = body.push(
@@ -654,6 +686,19 @@ pub fn control_data(shell: &crate::daemon::Shell) -> ControlData {
             .get("animations")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        stay_awake: shell.stay_awake,
+        night_light: shell
+            .settings
+            .values
+            .get("nightLightEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        night_light_temp: shell
+            .settings
+            .values
+            .get("nightLightTemperature")
+            .and_then(Value::as_i64)
+            .unwrap_or(4500),
         wifi,
         bluetooth,
         audio,
@@ -696,6 +741,9 @@ mod tests {
             now_date: "Mon, Oct 12".into(),
             dnd: false,
             animations: true,
+            stay_awake: false,
+            night_light: false,
+            night_light_temp: 4500,
             wifi: Some(WifiState {
                 connected: true,
                 enabled: true,
@@ -970,5 +1018,32 @@ mod tests {
         };
         eprintln!("E2E_BT_TILE_PANEL_POS={tx},{ty}");
         assert!(ty < 400.0, "bluetooth tile moved: ({tx},{ty})");
+        // stay-awake tile + performance button (e2e click coords)
+        let find_click = |kit: &mut Kit, panel: &mut ControlCenterPanel, want: u64| -> (f32, f32) {
+            let mut y = 4.0;
+            while y < 736.0 {
+                let mut x = 8.0;
+                while x < PANEL_W - 4.0 {
+                    let p = Point::new(x, y);
+                    let before = kit.queue.len();
+                    let mut c = kit.ctx();
+                    panel.deliver(&mut c, &InputEvent::down(p), None);
+                    panel.deliver(&mut c, &InputEvent::up(p), None);
+                    if kit.queue[before..]
+                        .iter()
+                        .any(|e| matches!(e, UiEvent::Click(id) if *id == want))
+                    {
+                        return (x + 60.0, y + 20.0);
+                    }
+                    x += 4.0;
+                }
+                y += 4.0;
+            }
+            panic!("widget {want:#x} never hit");
+        };
+        let (sx, sy) = find_click(&mut kit, &mut panel, ids::TILE_STAY_AWAKE);
+        eprintln!("E2E_STAY_AWAKE_PANEL_POS={sx},{sy}");
+        let (px, py) = find_click(&mut kit, &mut panel, ids::profile(2));
+        eprintln!("E2E_PERF_BUTTON_PANEL_POS={px},{py}");
     }
 }

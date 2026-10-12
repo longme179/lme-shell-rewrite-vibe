@@ -78,7 +78,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 | 2.2 | Audio/brightness actions | daemon ControlActions | e2e control_volume_slider_flushes_action | done (volume/mute/brightness via wpctl/brightnessctl, 100 ms debounce, optimistic snapshot) |
 | 2.3 | Bluetooth (BlueZ) | daemon probe_bluetooth + ControlActions | e2e control_bluetooth_tile_toggles (fake org.bluez + service-missing) | done (state tile + power toggle; pairing UI external) |
 | 2.4 | Wi-Fi (NetworkManager) | ControlActions::wifi_toggle | e2e control_wifi_tile_toggles_radio | partial (radio toggle done; WifiPanel connection list = TIER-2 completion) |
-| 2.5 | Power profiles / idle inhibit / night light | — | — | missing |
+| 2.5 | Power profiles / idle inhibit / night light | ControlActions + held children | e2e control_stay_awake_night_light_and_power_profile | done (profile row + stay-awake inhibitor + night-light child; swayidle manager itself = idle-management row) |
 | 2.6 | Weather UI | — | — | missing (backend client done in Phase 1) |
 | 2.7 | Calendar / to-do / timer | — | — | missing |
 | 2.8 | Clipboard history UI | — | — | missing (store done in Phase 1) |

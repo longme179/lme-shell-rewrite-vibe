@@ -194,7 +194,8 @@ fn fake_system_json() -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "battery": {"available": true, "percent": 77, "charging": true},
         "network": {"connected": true, "ssid": "Golden-5G"},
-        "audio": {"available": true, "volume": 64, "muted": false}
+        "audio": {"available": true, "volume": 64, "muted": false},
+        "powerProfile": "balanced"
     }))
     .unwrap()
 }
@@ -1541,6 +1542,61 @@ fn control_center_opens_and_matches_golden() {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2.5: stay-awake (idle inhibitor), night light (wlsunset) and power
+// profiles — tile/button clicks run the dry-run intents; coords locked by
+// control_center::volume_slider_position_is_stable.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_stay_awake_night_light_and_power_profile() {
+    let harness = spawn_harness_full(
+        "ctrl-25",
+        "1280x800",
+        None,
+        None,
+        // stay-awake tile (750,338), night-light tile (1115,338),
+        // Performance button (1210,634) — window coords
+        Some("motion:750,338@1500;click@1600;motion:1115,338@2500;click@2600;motion:1210,634@3500;click@3600"),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    let shell_log = harness.tmp.join("shell.log");
+    let want = [
+        ("dry-run: hold stay awake", "systemd-inhibit"),
+        ("dry-run: hold night light", "wlsunset"),
+        ("dry-run: power profile performance", "powerprofilesctl"),
+    ];
+    let deadline = Instant::now() + Duration::from_secs(15);
+    'outer: loop {
+        let Ok(text) = std::fs::read_to_string(&shell_log) else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        for (line, needle) in want {
+            let found = text.lines().any(|l| l.contains(line) && l.contains(needle));
+            if !found {
+                assert!(
+                    Instant::now() < deadline,
+                    "missing intent log {line:?}; shell.log:\n{text}"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+                continue 'outer;
+            }
+        }
+        break;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tier 2.4: Wi-Fi tile — the radio toggle runs the dry-run intent and the
 // optimistic snapshot flips the connected state (WifiPanel's connection
 // list is the TIER-2 completion item).
@@ -1706,9 +1762,10 @@ fn control_volume_slider_flushes_action() {
         "1280x800",
         None,
         None,
-        // panel spans x 666..1266; volume slider track 702..1230 at y 450;
+        // panel spans x 666..1266; volume slider track 702..1230 at y 518
+        // (unit-locked: control_center::volume_slider_position_is_stable);
         // a click at x=1100 -> ~76%
-        Some("motion:1100,450@1500;click@1600"),
+        Some("motion:1100,518@1500;click@1600"),
         false,
         None,
         &[],

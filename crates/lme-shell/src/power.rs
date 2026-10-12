@@ -66,6 +66,21 @@ impl LogindPower {
 }
 
 /// Spawn a detached process (never through a shell; argv only).
+/// Spawn a child we HOLD (idle inhibitor, wlsunset) — like spawn_detached
+/// but returns the Child so the caller can kill it to release/stop.
+/// (Tier 2.5; dry-run callers check their own flag before calling this.)
+pub fn spawn_detached_hold(argv: &[&str]) -> Result<std::process::Child, String> {
+    use std::process::{Command, Stdio};
+    let (prog, rest) = argv.split_first().ok_or("empty argv")?;
+    Command::new(prog)
+        .args(rest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("spawn {prog}: {e}"))
+}
+
 pub fn spawn_detached(argv: &[&str]) -> Result<String, String> {
     use std::process::Command;
     Command::new(argv[0])

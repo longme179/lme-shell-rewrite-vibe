@@ -85,6 +85,19 @@ pub struct Shell {
     /// flushed 100 ms after the last move).
     pub pending_volume: Option<i64>,
     pub pending_brightness: Option<i64>,
+    /// Tier 2.5: runtime stay-awake state (legacy ShellState.stayAwake).
+    pub stay_awake: bool,
+    /// Tier 2.5: runtime night-light state (the legacy persists
+    /// nightLightEnabled in settings; that key is NOT in the frozen
+    /// Phase-0 preference set — persistence lands with the backend
+    /// catch-up, see docs/UPSTREAM_SYNC.md).
+    pub night_light: bool,
+    /// Held idle-inhibit child (`systemd-inhibit --what=idle sleep
+    /// infinity`); dropping it releases the inhibitor (legacy holds
+    /// swayidle children the same way).
+    pub inhibit_child: Option<std::process::Child>,
+    /// Held night-light child (`wlsunset -t <temp>`); killed on disable.
+    pub night_child: Option<std::process::Child>,
     pub osd: Option<(u64, Instant)>,
     /// Dry-run volume preview shown by the audio-pill wheel (finding e);
     /// re-seeded from the system snapshot when the preview goes stale.
@@ -149,6 +162,10 @@ impl Shell {
             tool_runner: lme_backend::runner::CommandRunner::new(),
             pending_volume: None,
             pending_brightness: None,
+            stay_awake: false,
+            night_light: false,
+            inhibit_child: None,
+            night_child: None,
             osd: None,
             volume_preview: 0.0,
             volume_preview_at: None,
@@ -813,8 +830,65 @@ impl Shell {
                 self.rebuild_bars(state);
                 self.refresh_control_center(state);
             }
+            cc::TILE_STAY_AWAKE => {
+                // Tier 2.5: hold a logind idle inhibitor via a
+                // systemd-inhibit child (legacy holds swayidle children)
+                let enable = !self.stay_awake;
+                if enable {
+                    if let Some(child) = self.actions.hold(
+                        "stay awake",
+                        &[
+                            "systemd-inhibit",
+                            "--what=idle",
+                            "--who=lme-shell",
+                            "--why=Stay awake",
+                            "sleep",
+                            "infinity",
+                        ],
+                    ) {
+                        self.inhibit_child = Some(child);
+                    }
+                } else if let Some(mut child) = self.inhibit_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                self.stay_awake = enable;
+                self.refresh_control_center(state);
+            }
+            cc::TILE_NIGHT_LIGHT => {
+                // Tier 2.5: runtime flag + a held wlsunset child (the legacy
+                // persists nightLightEnabled in settings, but that key is NOT
+                // in the frozen Phase-0 preference set — persistence lands
+                // with the backend catch-up, see docs/UPSTREAM_SYNC.md)
+                let enable = !self.night_light;
+                let temp = self
+                    .settings
+                    .values
+                    .get("nightLightTemperature")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(4500);
+                if enable {
+                    if let Some(child) = self
+                        .actions
+                        .hold("night light", &["wlsunset", "-t", &temp.to_string()])
+                    {
+                        self.night_child = Some(child);
+                    }
+                } else if let Some(mut child) = self.night_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                self.night_light = enable;
+                self.refresh_control_center(state);
+            }
             id if (cc::PROFILE_BASE..cc::PROFILE_BASE + 3).contains(&id) => {
-                self.show_osd(state, "Power-profile switching lands with Tier 2.5", -1.0)
+                // Tier 2.5: powerprofilesctl set (backend powerProfile argv)
+                let values = ["power-saver", "balanced", "performance"];
+                let target = values[((id - cc::PROFILE_BASE) as usize).min(2)];
+                self.actions.power_profile(target);
+                self.system_snapshot
+                    .insert("powerProfile".to_string(), Value::from(target));
+                self.refresh_control_center(state);
             }
             cc::MEDIA_PREV | cc::MEDIA_PLAY | cc::MEDIA_NEXT => self.show_osd(
                 state,
@@ -942,6 +1016,26 @@ impl Shell {
         self.system_snapshot.insert("bluetooth".to_string(), state);
     }
 
+    /// Tier 2.5: power-profile daemon state (powerprofilesctl get) for the
+    /// control-center row — probed ONLY while the panel is open, like the
+    /// BlueZ probe (PERF register). Under LME_SHELL_FAKE_STATE the fake
+    /// system json provides `powerProfile` for deterministic tests.
+    fn probe_power_profile(&mut self) {
+        if std::env::var_os("LME_SHELL_FAKE_STATE").is_some() {
+            return;
+        }
+        let profile = self.system_probes.power_profile();
+        match profile {
+            Some(p) => {
+                self.system_snapshot
+                    .insert("powerProfile".to_string(), Value::from(p));
+            }
+            None => {
+                self.system_snapshot.remove("powerProfile");
+            }
+        }
+    }
+
     fn open_control_center(&mut self, state: &mut UiState) {
         let output = state.focused_output();
         let (out_w, out_h) = output
@@ -959,6 +1053,7 @@ impl Shell {
         spec.background = lme_ui::Color::rgba(0.0, 0.0, 0.0, 0.13);
         let id = state.create_window(spec);
         self.probe_bluetooth();
+        self.probe_power_profile();
         let data = crate::control_center::control_data(self);
         let panel =
             crate::control_center::ControlCenterPanel::new(&self.theme, &data, self.control_tab);
@@ -977,6 +1072,7 @@ impl Shell {
     pub fn refresh_control_center(&mut self, state: &mut UiState) {
         let Some(id) = self.control else { return };
         self.probe_bluetooth();
+        self.probe_power_profile();
         let data = crate::control_center::control_data(self);
         let tab = self.control_tab;
         let panel = crate::control_center::ControlCenterPanel::new(&self.theme, &data, tab);
@@ -1664,6 +1760,31 @@ impl ControlActions {
                 "set",
                 &format!("{value}%"),
             ],
+        );
+    }
+
+    /// Spawn a HELD child (idle inhibitor / wlsunset); dry-run logs the
+    /// intent and returns None (Tier 2.5).
+    pub fn hold(&self, label: &str, argv: &[&str]) -> Option<std::process::Child> {
+        if self.dry_run {
+            eprintln!("lme-shell: dry-run: hold {label} [{}]", argv.join(" "));
+            return None;
+        }
+        match crate::power::spawn_detached_hold(argv) {
+            Ok(child) => Some(child),
+            Err(e) => {
+                eprintln!("lme-shell: control: {label}: {e}");
+                None
+            }
+        }
+    }
+
+    /// Tier 2.5: power-profile switch (powerprofilesctl set; the backend
+    /// also has a D-Bus provider path — powerprofilesctl covers it).
+    pub fn power_profile(&self, target: &str) {
+        self.run(
+            &format!("power profile {target}"),
+            &["powerprofilesctl", "set", target],
         );
     }
 

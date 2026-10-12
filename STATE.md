@@ -98,10 +98,20 @@ connected flip); e2e control_wifi_tile_toggles_radio. The WifiPanel
 connection list (nm D-Bus) is the TIER-2 completion item, as planned.
 157 passed + 4 ignored, 26 e2e green.
 
-**Next: TIER-2A delivery (deliver.sh TIER-2A: gates + export + replay +
-scan + zip + webhook), then Tier 2 completion (2.5 power profiles / idle
-inhibit / night light, 2.6 weather, 2.7 agenda, 2.8 clipboard, 2.9
-activity island, 2.10 workspace board, WifiPanel).**
+**TIER-2A DELIVERED** (see the delivery record below), then **Tier 2.5
+DONE**: power-profile row (powerprofilesctl probe visibility-gated +
+fake-state bypass, set via ControlActions, optimistic flip), Stay-awake
+tile (held `systemd-inhibit --what=idle sleep infinity` child, the legacy
+child-holding pattern), Night Light tile (held `wlsunset -t <temp>`
+child + runtime flag — nightLightEnabled is NOT a frozen preference key,
+persistence lands with the backend catch-up). e2e
+control_stay_awake_night_light_and_power_profile (3 clicks, 3 dry-run
+intent logs). 158 passed + 4 ignored, 27 e2e green.
+
+**Next: Tier 2 completion — 2.6 weather UI, 2.7 agenda/calendar (needs
+the KI-3 Flickable/scroll port), 2.8 clipboard, 2.9 activity island
+(MPRIS transport), 2.10 workspace board, WifiPanel connection list;
+then TIER-2 delivery.**
 
 Previous session (Amendment 4: robustness + registry + D25):
 
