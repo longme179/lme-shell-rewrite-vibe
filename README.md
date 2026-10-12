@@ -143,17 +143,22 @@ with ~10 subprocesses per 2 s poll.
 
 ## Known limitations (honest list)
 
-- Tier 2/3 features are missing: notification daemon, tray, control center,
-  clipboard UI, settings window, Wi-Fi/Bluetooth/night-light/weather UIs,
-  activity island, workspace board, idle management. Toggling them via `msg`
-  or the bar shows an OSD notice instead of pretending.
-- Pointer input is implemented but never exercised (mock compositor has no
-  pointer); keyboard is fully covered by the golden tests.
-- No fractional-scale-v1 support yet (integer scale only; buffers are
-  logical-sized). On HiDPI outputs at fractional scales the shell will look
-  wrong until that lands.
-- The media/resources/activity bar modules have no data feed, so they stay
-  hidden even when enabled in settings.
+- Tier 2/3 features are missing: control center, clipboard UI, settings
+  window, Wi-Fi/Bluetooth/night-light/weather UIs, activity island,
+  workspace board, idle management. Toggling them via `msg` or the bar
+  shows an OSD notice instead of pretending. (Notification daemon, tray
+  and MPRIS media landed in Tier 1.)
+- Fractional scaling (Tier 0.9) is implemented and golden-validated at
+  1.25 against the mock compositor, with the scale-1.0 path kept
+  byte-identical to the pre-fractional build. It has NOT been validated on
+  a real compositor at a fractional scale yet (docs/KNOWN_ISSUES.md KI-2)
+  — the first real-session HiDPI run should compare against the integer
+  scale look before trusting it.
+- The activity bar module has no data feed yet, so it stays hidden even
+  when enabled in settings.
+- If inotify is unavailable (EMFILE / NFS), the daemon survives with hot
+  reload degraded to a 5 s mtime poll (or force it with settings.json
+  `"hotReload": "poll"`).
 - The launcher's `calculate` mode evaluates locally (no backend round-trip) —
   a deliberate deviation, logged in docs/DECISIONS.md D13.
 - `lme-backend` implements the Phase 0 frozen Python contract; the upstream

@@ -36,7 +36,7 @@ impl ShadowCache {
 
     /// Set the render scale for subsequent `get`s (Tier 0.9).
     pub fn set_render_scale(&mut self, scale: f32) {
-        self.render_scale = if scale.is_finite() && scale >= 0.5 && scale <= 10.0 {
+        self.render_scale = if scale.is_finite() && (0.5..=10.0).contains(&scale) {
             scale
         } else {
             1.0

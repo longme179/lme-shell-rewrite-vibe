@@ -59,7 +59,7 @@ impl ShapedText {
 
     /// Convert PHYSICAL shaping metrics to LOGICAL (glyphs stay physical).
     /// Called once after shaping at `scale`.
-    fn to_logical(&mut self, scale: f32) {
+    fn scale_metrics_to_logical(&mut self, scale: f32) {
         if scale > 0.0 && scale != 1.0 {
             self.width /= scale;
             self.ascent /= scale;
@@ -89,7 +89,7 @@ impl FontBook {
     /// Must be called before layout/paint of a frame; the shaped-line
     /// cache keys on the physical size, so lines re-shape on scale change.
     pub fn set_render_scale(&mut self, scale: f32) {
-        self.render_scale = if scale.is_finite() && scale >= 0.5 && scale <= 10.0 {
+        self.render_scale = if scale.is_finite() && (0.5..=10.0).contains(&scale) {
             scale
         } else {
             1.0
@@ -178,7 +178,7 @@ impl FontBook {
                     } else {
                         result.text = candidate;
                     }
-                    result.to_logical(scale);
+                    result.scale_metrics_to_logical(scale);
                     return result;
                 }
                 len = len.saturating_sub((len / 8).max(1));
@@ -186,7 +186,7 @@ impl FontBook {
         }
         let mut result = self.shape_raw(&key.text, size, key.weight, max_w);
         result.text = key.text.clone();
-        result.to_logical(scale);
+        result.scale_metrics_to_logical(scale);
         result
     }
 

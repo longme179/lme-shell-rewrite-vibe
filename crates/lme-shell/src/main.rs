@@ -8,7 +8,6 @@
 mod bar;
 mod click_ids;
 mod daemon;
-mod dbus_util;
 mod ipc;
 mod launcher_data;
 mod mpris;

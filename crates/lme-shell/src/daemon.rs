@@ -19,8 +19,9 @@ use lme_ui::wayland::{AppHandler, KeyboardInteractivity, Layer, OutputRec, UiSta
 use lme_ui::widgets::{KeyInput, UiEvent, Widget, XKB_ESCAPE};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::mpsc as std_mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1159,7 +1160,13 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
         }
     }
 
-    // ---- settings/palette hot reload (inotify) ----
+    // ---- settings/palette hot reload (inotify; 5 s mtime poll fallback) ----
+    // Amendment 5 (hygiene 4): inotify_init can fail (EMFILE — observed
+    // under heavy e2e parallelism) and previously KILLED the daemon at
+    // startup. It must survive: log once, skip the watcher, and poll
+    // settings/palette mtimes every 5 s instead (docs/PERF.md). The poll
+    // path is also selectable explicitly via settings.json
+    // "hotReload": "poll" (NFS homes, exhausted instance budget).
     {
         use calloop::generic::Generic;
         use calloop::{Interest, Mode};
@@ -1187,53 +1194,62 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
                 unsafe { std::os::fd::BorrowedFd::borrow_raw(self.fd) }
             }
         }
-        let inotify = match inotify::Inotify::init() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("lme-shell: inotify: {e}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
         let config_dir = settings_dir();
         let _ = std::fs::create_dir_all(&config_dir);
-        let _ = inotify.watches().add(
-            &config_dir,
-            inotify::WatchMask::CLOSE_WRITE
-                | inotify::WatchMask::MOVED_TO
-                | inotify::WatchMask::CREATE,
-        );
-        let source = Generic::new(InotifyCell::new(inotify), Interest::READ, Mode::Level);
-        if let Err(e) = handle.insert_source(source, |_r, inotify, state| {
-            let mut buffer = [0u8; 4096];
-            let mut settings_changed = false;
-            let mut palette_changed = false;
-            if let Ok(events) = inotify.read(&mut buffer) {
-                for event in events {
-                    let name = event.name.unwrap_or_default().to_string_lossy().to_string();
-                    if name == "settings.json" {
-                        settings_changed = true;
-                    } else if name == "palette.json" {
-                        palette_changed = true;
-                    }
+        let forced_poll = with_shell(&mut state, |shell, _| {
+            shell
+                .settings
+                .values
+                .get("hotReload")
+                .and_then(Value::as_str)
+                == Some("poll")
+        });
+        let inotify = if forced_poll {
+            None
+        } else {
+            match inotify::Inotify::init() {
+                Ok(i) => Some(i),
+                Err(e) => {
+                    eprintln!("lme-shell: inotify: {e}; hot reload degraded to a 5 s mtime poll");
+                    None
                 }
             }
-            if settings_changed || palette_changed {
-                crate::daemon::with_shell(state, |shell, state| {
-                    let s_changed = shell.settings.reload_settings();
-                    let p_changed = shell.settings.reload_palette();
-                    if s_changed || p_changed {
-                        shell.refresh_theme();
-                        shell.rebuild_bars(state);
-                        if shell.launcher.is_some() {
-                            shell.refresh_launcher(state);
+        };
+        match inotify {
+            Some(inotify) => {
+                let _ = inotify.watches().add(
+                    &config_dir,
+                    inotify::WatchMask::CLOSE_WRITE
+                        | inotify::WatchMask::MOVED_TO
+                        | inotify::WatchMask::CREATE,
+                );
+                let source = Generic::new(InotifyCell::new(inotify), Interest::READ, Mode::Level);
+                if let Err(e) = handle.insert_source(source, |_r, inotify, state| {
+                    let mut buffer = [0u8; 4096];
+                    let mut settings_changed = false;
+                    let mut palette_changed = false;
+                    if let Ok(events) = inotify.read(&mut buffer) {
+                        for event in events {
+                            let name = event.name.unwrap_or_default().to_string_lossy().to_string();
+                            if name == "settings.json" {
+                                settings_changed = true;
+                            } else if name == "palette.json" {
+                                palette_changed = true;
+                            }
                         }
                     }
-                });
+                    if settings_changed || palette_changed {
+                        apply_config_reload(state);
+                    }
+                    Ok(calloop::PostAction::Continue)
+                }) {
+                    eprintln!(
+                        "lme-shell: inotify source: {e:?}; hot reload degraded to a 5 s mtime poll"
+                    );
+                    insert_mtime_poll(&handle, &config_dir);
+                }
             }
-            Ok(calloop::PostAction::Continue)
-        }) {
-            eprintln!("lme-shell: inotify source: {e:?}");
-            return std::process::ExitCode::FAILURE;
+            None => insert_mtime_poll(&handle, &config_dir),
         }
     }
 
@@ -1337,6 +1353,69 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+/// Apply a settings/palette reload (shared by the inotify watcher and the
+/// 5 s mtime poll fallback — Amendment 5, hygiene 4).
+fn apply_config_reload(state: &mut UiState) {
+    with_shell(state, |shell, state| {
+        let s_changed = shell.settings.reload_settings();
+        let p_changed = shell.settings.reload_palette();
+        if s_changed || p_changed {
+            shell.refresh_theme();
+            shell.rebuild_bars(state);
+            if shell.launcher.is_some() {
+                shell.refresh_launcher(state);
+            }
+        }
+    });
+}
+
+/// Mtime snapshot of (settings.json, palette.json) in a config dir.
+fn config_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
+    let mtime = |file: &str| {
+        std::fs::metadata(dir.join(file))
+            .and_then(|meta| meta.modified())
+            .ok()
+    };
+    (mtime("settings.json"), mtime("palette.json"))
+}
+
+/// 5 s mtime poll fallback for settings/palette hot reload when inotify is
+/// unavailable (EMFILE / exhausted instances — Amendment 5, hygiene 4: the
+/// daemon must survive and keep hot reload working, listed in docs/PERF.md).
+struct MtimePoll {
+    last: (Option<SystemTime>, Option<SystemTime>),
+}
+
+impl MtimePoll {
+    fn new(dir: &Path) -> Self {
+        Self {
+            last: config_mtimes(dir),
+        }
+    }
+
+    /// True when settings.json or palette.json changed (mtime create,
+    /// modify OR delete) since the previous call.
+    fn changed(&mut self, dir: &Path) -> bool {
+        let now = config_mtimes(dir);
+        let changed = now != self.last;
+        self.last = now;
+        changed
+    }
+}
+
+/// Install the repeating 5 s mtime-poll timer for config hot reload.
+fn insert_mtime_poll(handle: &calloop::LoopHandle<'static, UiState>, config_dir: &Path) {
+    let dir = config_dir.to_path_buf();
+    let mut poll = MtimePoll::new(&dir);
+    let timer = calloop::timer::Timer::from_duration(Duration::from_secs(5));
+    let _ = handle.insert_source(timer, move |_, _, state| {
+        if poll.changed(&dir) {
+            apply_config_reload(state);
+        }
+        calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
+    });
+}
+
 fn settings_dir() -> std::path::PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -1387,6 +1466,55 @@ pub fn workspace_focus_target(workspaces: &[Value], steps: i32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mtime_poll_detects_create_modify_delete() {
+        // Amendment 5 (hygiene 4): the inotify-unavailable fallback must
+        // see settings.json / palette.json create, modify AND delete.
+        let dir = std::env::temp_dir().join(format!("lme-mtimepoll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+
+        let mut poll = MtimePoll::new(&dir);
+        assert!(!poll.changed(&dir), "no files yet: nothing changed");
+
+        // create
+        std::fs::write(&settings, "{}").unwrap();
+        assert!(poll.changed(&dir), "create detected");
+        assert!(!poll.changed(&dir), "stable: no change");
+
+        // modify (mtime must advance; sleep past any fs timestamp grace)
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&settings, r#"{"barFontSize": 26}"#).unwrap();
+        assert!(poll.changed(&dir), "modify detected");
+
+        // second file (palette.json) counts too
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(dir.join("palette.json"), "{}").unwrap();
+        assert!(poll.changed(&dir), "palette create detected");
+
+        // delete
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::remove_file(&settings).unwrap();
+        assert!(poll.changed(&dir), "delete detected");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mtime_poll_ignores_other_files() {
+        let dir = std::env::temp_dir().join(format!("lme-mtimepoll-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut poll = MtimePoll::new(&dir);
+        std::fs::write(dir.join("unrelated.json"), "{}").unwrap();
+        assert!(
+            !poll.changed(&dir),
+            "only settings.json / palette.json are watched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn workspaces() -> Vec<Value> {
         serde_json::json!([

@@ -44,11 +44,11 @@ use std::time::Instant;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 // Tier 0.9: fractional scale + viewporter (staging protocols)
+use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
-use wayland_protocols::wp::viewporter::client::{wp_viewporter, wp_viewport};
-use wayland_client::{Connection, QueueHandle};
+use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 
 /// Info about one output.
 #[derive(Clone)]
@@ -239,11 +239,9 @@ impl UiState {
         let output_state = OutputState::new(&globals, &qh);
         // Tier 0.9: optional globals — compositor without them keeps the
         // buffer scale 1 identity path (no viewport, scale stays 1.0).
-        let viewporter: Option<wp_viewporter::WpViewporter> =
+        let viewporter: Option<wp_viewporter::WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
+        let fractional_mgr: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1> =
             globals.bind(&qh, 1..=1, ()).ok();
-        let fractional_mgr: Option<
-            wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
-        > = globals.bind(&qh, 1..=1, ()).ok();
 
         Ok(UiState {
             registry_state,
@@ -340,12 +338,10 @@ impl UiState {
             layer.set_size(w, h);
         }
         layer.commit();
-        // Tier 0.9: viewport + fractional scale per surface. The preferred
-        // scale event usually arrives before the first configure.
-        let viewport = self
-            .viewporter
-            .as_ref()
-            .map(|v| v.get_viewport(layer.wl_surface(), &self.qh, ()));
+        // Tier 0.9 (Amendment 5 safety design): only the fractional-scale
+        // listener is set up here. The wp_viewport object is created lazily
+        // when a non-1.0 preferred_scale arrives, so at scale 1.0 the wire
+        // stream stays byte-for-byte the validated TIER-1 path.
         if let Some(mgr) = &self.fractional_mgr {
             mgr.get_fractional_scale(layer.wl_surface(), &self.qh, id);
         }
@@ -367,7 +363,7 @@ impl UiState {
             animating: false,
             focus: None,
             configured: false,
-            viewport,
+            viewport: None,
             scale: 1.0,
         };
         self.windows.insert(id, window);
@@ -599,7 +595,8 @@ impl UiState {
             let phys_w = ((w.size.0 as f32) * scale).ceil() as u32;
             let phys_h = ((w.size.1 as f32) * scale).ceil() as u32;
             w.renderer.resize(phys_w, phys_h);
-            w.renderer.render(&cmds, &mut self.fonts, w.background, scale);
+            w.renderer
+                .render(&cmds, &mut self.fonts, w.background, scale);
         }
         let Some(w) = self.windows.get_mut(&id) else {
             return;
@@ -608,23 +605,18 @@ impl UiState {
         // scale), wp_viewport destination = logical size (set on configure).
         let buf_w = ((width as f32) * scale).ceil() as i32;
         let buf_h = ((height as f32) * scale).ceil() as i32;
-        let (buffer, canvas) = match w.pool.create_buffer(
-            buf_w,
-            buf_h,
-            buf_w * 4,
-            wl_shm::Format::Argb8888,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("lme-ui: buffer creation failed for window {id}: {e:?}");
-                return;
-            }
-        };
+        let (buffer, canvas) =
+            match w
+                .pool
+                .create_buffer(buf_w, buf_h, buf_w * 4, wl_shm::Format::Argb8888)
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("lme-ui: buffer creation failed for window {id}: {e:?}");
+                    return;
+                }
+            };
         // Copy BGRA frame into the wl_shm canvas.
-        if std::env::var_os("LME_RENDER_DUMP").is_some() {
-            let path = format!("/tmp/lme-render-dump-{id}-{}x{}.bgra", buf_w, buf_h);
-            let _ = std::fs::write(&path, w.renderer.bgra());
-        }
         canvas.copy_from_slice(w.renderer.bgra());
         let surface = w.layer.wl_surface().clone();
         surface.damage_buffer(0, 0, buf_w, buf_h);
@@ -1226,6 +1218,92 @@ impl ProvidesRegistryState for UiState {
 
 smithay_client_toolkit::delegate_dispatch2!(UiState);
 
+// ---- Tier 0.9: wp_viewporter + wp_fractional_scale_v1 dispatch ----
+// The manager/viewport proxies have no events; only the fractional-scale
+// object talks back (preferred_scale, ×120 wire units).
+
+impl wayland_client::Dispatch<wp_viewporter::WpViewporter, ()> for UiState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_viewporter::WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl wayland_client::Dispatch<wp_viewport::WpViewport, ()> for UiState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_viewport::WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl wayland_client::Dispatch<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, ()>
+    for UiState
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        _event: wp_fractional_scale_manager_v1::Event,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl wayland_client::Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, u64> for UiState {
+    fn event(
+        state: &mut Self,
+        _proxy: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        window_id: &u64,
+        _conn: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            let scale = (scale as f32) / 120.0;
+            if let Some(w) = state.windows.get_mut(window_id) {
+                if (w.scale - scale).abs() > f32::EPSILON {
+                    w.scale = scale;
+                    w.needs_layout = true;
+                    w.needs_render = true;
+                    // Tier 0.9 (Amendment 5): engage the viewport path ONLY
+                    // for a real fractional scale — at 1.0 no wp_viewport
+                    // object is ever created (TIER-1 wire stays identical).
+                    if scale != 1.0 && w.viewport.is_none() {
+                        let surface = w.layer.wl_surface().clone();
+                        let vp = state
+                            .viewporter
+                            .as_ref()
+                            .map(|v| v.get_viewport(&surface, &state.qh, ()));
+                        w.viewport = vp;
+                    }
+                    if w.configured {
+                        if let Some(vp) = &w.viewport {
+                            vp.set_destination(w.size.0 as i32, w.size.1 as i32);
+                        }
+                    }
+                    if !state.render_queue.contains(window_id) {
+                        state.render_queue.push(*window_id);
+                    }
+                    if let Some(p) = &state.ping {
+                        p.ping();
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1294,80 +1372,5 @@ mod tests {
             0.0,
             "20+20 after a stop never reaches the threshold"
         );
-    }
-}
-
-// ---- Tier 0.9: wp_viewporter + wp_fractional_scale_v1 dispatch ----
-// The manager/viewport proxies have no events; only the fractional-scale
-// object talks back (preferred_scale, ×120 wire units).
-
-impl wayland_client::Dispatch<wp_viewporter::WpViewporter, ()> for UiState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wp_viewporter::WpViewporter,
-        _event: wp_viewporter::Event,
-        _data: &(),
-        _conn: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl wayland_client::Dispatch<wp_viewport::WpViewport, ()> for UiState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wp_viewport::WpViewport,
-        _event: wp_viewport::Event,
-        _data: &(),
-        _conn: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl wayland_client::Dispatch<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, ()>
-    for UiState
-{
-    fn event(
-        _state: &mut Self,
-        _proxy: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
-        _event: wp_fractional_scale_manager_v1::Event,
-        _data: &(),
-        _conn: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl wayland_client::Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, u64> for UiState {
-    fn event(
-        state: &mut Self,
-        _proxy: &wp_fractional_scale_v1::WpFractionalScaleV1,
-        event: wp_fractional_scale_v1::Event,
-        window_id: &u64,
-        _conn: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<Self>,
-    ) {
-        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
-            let scale = (scale as f32) / 120.0;
-            if let Some(w) = state.windows.get_mut(window_id) {
-                if (w.scale - scale).abs() > f32::EPSILON {
-                    w.scale = scale;
-                    w.needs_layout = true;
-                    w.needs_render = true;
-                    if w.configured {
-                        if let Some(vp) = &w.viewport {
-                            vp.set_destination(w.size.0 as i32, w.size.1 as i32);
-                        }
-                    }
-                    if !state.render_queue.contains(window_id) {
-                        state.render_queue.push(*window_id);
-                    }
-                    if let Some(p) = &state.ping {
-                        p.ping();
-                    }
-                }
-            }
-        }
     }
 }

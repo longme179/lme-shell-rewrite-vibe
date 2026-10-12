@@ -301,9 +301,6 @@ pub fn spawn(tx: calloop::channel::Sender<DbusEvent>) -> Result<DbusHandle, Stri
         .map_err(|e| format!("name {IFACE}: {e}"))?
         .build()
         .map_err(|e| format!("connect: {e}"))?;
-    // D25: keep zbus's internal executor driver thread alive forever (a
-    // drained executor never restarts and later calls/replies hang).
-    crate::dbus_util::drive_executor_forever(&conn);
 
     // The connection must stay alive; the emitter thread owns it and exits
     // when the daemon drops the command sender (Shell.dbus_cmd), releasing

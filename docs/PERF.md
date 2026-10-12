@@ -83,6 +83,7 @@ Every recurring poll in the daemon, with its period and visibility rule:
 | Battery/sysfs system probe | 30 s | always (bar pill) | calloop timer |
 | MPRIS reconcile tick (D25) | 1 s while no player, 5 s while one is live | media module enabled | mpris feed thread |
 | Notification expiry timers | per-toast timeout | only while toasts exist | calloop timers |
+| Settings/palette mtime poll (Amendment 5, hygiene 4) | 5 s | ONLY when inotify is unavailable (EMFILE) or settings.json `hotReload: "poll"` — the inotify path wakes zero | calloop timer |
 
 Idle wakeups with the 1 s empty-tick: ≤ 1.15/s worst case (one ListNames
 call per second while waiting for a player) — within the ≤ 1/s class

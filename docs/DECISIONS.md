@@ -284,3 +284,33 @@ Residual risk: if the whole connection wedges (all dispatch dead, not
 just one call), ticks cannot recover it — would need a connection
 rebuild; not observed in any run. Real-machine validation stays on the
 checklist (sandbox-only observation either way).
+
+## D26 — Tier 0.9 fractional scale: viewport path, lazy engagement at non-1.0 only
+
+Amendment 5 capped the fractional-scale fight at 20 further tool calls. The
+previous session's WIP turned out to already be correct: the mock compositor
+reads buffers with pread (resize-safe, per-buffer offset/stride/geometry),
+and sctk 0.21.1's SlotPool carves a fresh wl_buffer per frame — none of the
+three mock-side hypotheses were live bugs. What the session had lacked was
+verification and hygiene.
+
+Final design (crates/lme-ui/src/wayland.rs, render.rs, text.rs, shadow.rs):
+
+- buffer scale stays 1; buffer = ceil(logical x scale); wp_viewport
+  destination = logical size; text shaped at physical px with metrics
+  stored logical (widgets never see the scale); text/shadow caches keyed
+  by scale (the shaped-line cache key includes the physical size).
+- **Amendment 5 safety design**: the wp_viewport object is created ONLY
+  when a non-1.0 preferred_scale arrives — at 1.0 the wire stream is
+  byte-for-byte the validated TIER-1 path (verified by 12 other goldens
+  staying green).
+- The fractional e2e passes `--scale 1.25` as an explicit
+  spawn_harness_full parameter. The original process-global
+  LME_E2E_SCALE env var RACED with parallel tests (any golden spawning
+  during the set_var window inherited 1.25 — a real 1-in-4 flake, caught
+  and fixed, not retried).
+- Mock capture: deterministic box-filter downscale to the viewport
+  destination so goldens compare at logical size (the 1.25 golden is
+  intentionally softer — a real compositor shows the sharp physical
+  buffer; see KNOWN_ISSUES KI-2 for the real-niri validation that
+  remains).

@@ -506,9 +506,6 @@ pub fn spawn(tx: calloop::channel::Sender<TrayEvent>) -> Result<TrayHandle, Stri
         .map_err(|e| format!("name {WATCHER_IFACE}: {e}"))?
         .build()
         .map_err(|e| format!("connect: {e}"))?;
-    // D25: keep zbus's internal executor driver thread alive forever (a
-    // drained executor never restarts and later calls/replies hang).
-    crate::dbus_util::drive_executor_forever(&conn);
 
     let mgr_tx = Arc::new(mgr_tx);
     let handle_tx = Arc::clone(&mgr_tx);
@@ -728,10 +725,7 @@ fn fetch_item(
     bus: &str,
     path: &str,
 ) -> Result<TrayItem, String> {
-    // CacheProperties::No (D25 — see dbus_util): the default Lazily
-    // cache's background GetAll deadlocks intermittently on shared
-    // blocking connections; raw Gets never do.
-    let proxy = crate::dbus_util::no_cache_proxy(conn, bus, path, SNI_IFACE)
+    let proxy = zbus::blocking::Proxy::new(conn, bus, path, SNI_IFACE)
         .map_err(|e| format!("proxy: {e}"))?;
     let str_prop = |name: &str, default: &str| -> String {
         proxy

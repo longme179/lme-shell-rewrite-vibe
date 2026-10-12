@@ -97,6 +97,11 @@ single-thread `async_io::block_on` shape stalls in the daemon context,
 while the identical standalone probe (examples/mpris_probe.rs) is 12/12
 stable.
 
+STATUS (Amendment 5): the "wakeup loss inside zbus" mechanism is a
+HYPOTHESIS — it was never reproduced in a minimal probe (mpris_probe.rs is
+12/12 stable); what is ESTABLISHED is the observable (wire reply never
+dispatched in the full-daemon context) and the fix (self-healing below).
+
 Rules distilled:
 
 1. Prefer the ONE-THREAD/ONE-block_on shape for new D-Bus modules (see
@@ -107,12 +112,18 @@ Rules distilled:
    NOT extend that pattern to new client-only modules.
 2. EVERY push-driven feed needs a self-healing poll: a reconcile tick
    (ListNames diff or equivalent) + per-call timeouts raced against a
-   timer. A lost wakeup then costs one tick, not a hang.
-3. `CacheProperties::No` proxies for property reads (dbus_util::
-   no_cache_proxy): plain Get calls, no background cache task.
-4. `dbus_util::drive_executor_forever` for blocking connections: zbus's
-   internal driver thread exits when the executor drains and never
-   restarts ("failure to do so will result in hangs" — zbus docs).
+   timer. A lost wakeup then costs one tick, not a hang. This is the fix
+   that actually made the flake disappear — everything else below was
+   tried and did NOT change the stall rate (D25 ladder, steps 3-4).
+3. (RETRACTED, Amendment 5) `CacheProperties::No` proxies: HYPOTHESIS,
+   not reproduced in a minimal probe — the cache-deadlock theory did not
+   fix the stall (ladder step 3, "stall identical"). The
+   `dbus_util::no_cache_proxy` helper was prophylaxis and has been
+   REMOVED; do not re-add it without a failing test that it fixes.
+4. (RETRACTED, Amendment 5) the custom executor tick loop
+   (`drive_executor_forever`): same — the executor-driver-exit theory did
+   not fix the stall (ladder step 4, "stall identical"), never confirmed
+   in a minimal probe, helper REMOVED.
 5. Debug knobs: LME_SHELL_NO_NOTIF / LME_SHELL_NO_TRAY skip modules for
    bisecting; LME_MPRIS_DEBUG prints feed markers; mpris_probe.rs is the
    standalone pattern reference.

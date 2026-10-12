@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use wayland_protocols::wp::fractional_scale::v1::server::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
-use wayland_protocols::wp::viewporter::server::{wp_viewporter, wp_viewport};
+use wayland_protocols::wp::viewporter::server::{wp_viewport, wp_viewporter};
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 // the generated types live inside the snake_case modules:
 use std::sync::Arc;
@@ -58,8 +58,8 @@ use wayland_server::{
     },
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, Resource, WEnum,
 };
+use wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use zwlr_layer_shell_v1::ZwlrLayerShellV1 as LayerShellIface;
-use wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1 as WpFractionalScaleManagerV1;
 use zwlr_layer_surface_v1::ZwlrLayerSurfaceV1 as LayerSurfaceIface;
 
 const KEYMAP: &str = include_str!("../assets/minimal-keymap.xkb");
@@ -617,11 +617,6 @@ impl State {
         self.capture_to_scaled(buf, &path, dst)
     }
 
-    /// Encode a buffer's current contents to a PNG at `path`.
-    fn capture_to(&self, buf: &BufferRec, path: &str) -> Option<String> {
-        self.capture_to_scaled(buf, path, None)
-    }
-
     /// Capture with an optional wp_viewport destination (logical px):
     /// the buffer is downscaled to the destination with a deterministic
     /// box filter so goldens compare at logical size at any scale.
@@ -637,18 +632,6 @@ impl State {
         let mut raw = vec![0u8; len];
         pool.fd.read_exact_at(&mut raw, buf.offset as u64).ok()?;
         let rgba = bgra_rows_to_rgba(&raw, buf.w, buf.h, buf.stride);
-        // DEBUG (D26/Tier 0.9): raw dump next to the capture
-        if std::env::var_os("LME_MOCK_RAW_DUMP").is_some() {
-            let rp = format!("{path}.raw.png");
-            if let Ok(f) = fs::File::create(&rp) {
-                let mut e = png::Encoder::new(f, buf.w as u32, buf.h as u32);
-                e.set_color(png::ColorType::Rgba);
-                e.set_depth(png::BitDepth::Eight);
-                if let Ok(mut w) = e.write_header() {
-                    let _ = w.write_image_data(&rgba);
-                }
-            }
-        }
         let (out, w, h) = match viewport_dst {
             Some((dw, dh)) if dw > 0 && dh > 0 && (dw != buf.w || dh != buf.h) => {
                 (downscale_box(&rgba, buf.w, buf.h, dw, dh), dw, dh)
@@ -936,7 +919,8 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                 // capture?
                 if let (Some(n), Some(_)) = (state.capture_commit, &buf_rec) {
                     if commit_no == n {
-                        let path = state.capture(buf_rec.as_ref().expect("capture buf"), &resource.id());
+                        let path =
+                            state.capture(buf_rec.as_ref().expect("capture buf"), &resource.id());
                         if let Some(p) = path {
                             state.slog("CAPTURED", &p);
                         } else {
@@ -1496,10 +1480,7 @@ impl Dispatch<WpFractionalScaleManagerV1, ()> for State {
     ) {
         // GetFractionalScale { surface, id }: create the object and
         // immediately push the preferred scale (×120 wire units).
-        if let wp_fractional_scale_manager_v1::Request::GetFractionalScale {
-            surface,
-            id,
-        } = request
+        if let wp_fractional_scale_manager_v1::Request::GetFractionalScale { surface, id } = request
         {
             let fs = data_init.init(id, surface.id().clone());
             let wire = (state.fractional_scale * 120.0).round() as u32;

@@ -8,9 +8,96 @@
 //! Goldens regenerate with LME_GOLDEN_REGEN=1 (inspect them before trusting).
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// Amendment 5 (hygiene 3): every long-lived e2e child (daemon, mock,
+/// bus, monitor, fakes) runs in its OWN process group (process_group(0))
+/// and is killed GROUP-wide + reaped in Drop, so a panicking test can
+/// never leak it.
+fn kill_group(child: &mut Child) {
+    // pgid == pid for process_group(0) children; `kill -9 -PGID` reaps
+    // any grandchildren the child may have forked.
+    let pgid = child.id();
+    let _ = Command::new("kill")
+        .args(["-9", &format!("-{pgid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Owned child killed (group-wide) + reaped exactly once, even on panic.
+struct ChildGuard(Child);
+
+impl ChildGuard {
+    /// Kill now but keep the guard (idempotent Drop later).
+    fn kill_now(&mut self) {
+        kill_group(&mut self.0);
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        kill_group(&mut self.0);
+    }
+}
+
+/// Amendment 5 (hygiene 3): fail fast with a clear message when orphaned
+/// test processes from a previous crashed run are still alive (the
+/// Amendment-4 session hit 128 leaked daemons exhausting the inotify
+/// budget; 82 dbus-daemons were found leaked again at this audit — see
+/// KNOWN_ISSUES). Orphans (ppid 1) only: children of OTHER live parallel
+/// tests are legitimate.
+fn assert_no_orphaned_test_procs() {
+    let shell_names = ["lme-shell", "mock-compositor", "fake_sni", "fake_mpris"];
+    let mut found = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in dir.flatten() {
+        let pid = entry.file_name().to_string_lossy().into_owned();
+        if !pid.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else {
+            continue;
+        };
+        let comm = comm.trim().to_string();
+        let is_ours = shell_names.contains(&comm.as_str())
+            || (comm == "dbus-daemon" && {
+                // only our private test buses (never a real session bus,
+                // which lives in /run/user, not /tmp)
+                match std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
+                    Ok(cl) => cl.contains("/tmp/") && cl.contains("--address=unix:path="),
+                    Err(_) => false,
+                }
+            });
+        if !is_ours {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        // fields: pid (comm) state ppid — our comms contain no spaces
+        if let Some(ppid) = stat.split(' ').nth(3) {
+            if ppid == "1" {
+                found.push(format!("{comm}({pid})"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "leftover orphaned test processes from a previous crashed run: {} \
+         — kill them (pkill -9 -x lme-shell; pkill -9 -x mock-compositor; \
+         pkill -9 -x fake_sni; pkill -9 -x fake_mpris; and test dbus-daemons \
+         with: pkill -9 -f 'dbus-daemon.*--address=unix:path=/tmp/') and re-run",
+        found.join(", ")
+    );
+}
 
 const GOLDEN_DIR: &str = "tests/golden";
 
@@ -24,11 +111,11 @@ struct Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        let _ = self._daemon.kill();
-        let _ = self._daemon.wait();
-        let _ = self.compositor.kill();
-        let _ = self.compositor.wait();
-        // best-effort cleanup (other tests reuse the pid-suffixed dirs)
+        kill_group(&mut self._daemon);
+        kill_group(&mut self.compositor);
+        // best-effort cleanup: stale tmp dirs accumulated across runs
+        // (560 at the Amendment-5 audit); remove our own to stop the growth.
+        let _ = std::fs::remove_dir_all(&self.tmp);
     }
 }
 
@@ -128,18 +215,21 @@ struct PrivateBus {
 
 impl Drop for PrivateBus {
     fn drop(&mut self) {
-        let _ = self._monitor.kill();
-        let _ = self._monitor.wait();
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
+        kill_group(&mut self._monitor);
+        kill_group(&mut self.daemon);
     }
 }
 
 fn spawn_private_bus(tmp: &Path) -> PrivateBus {
+    assert_no_orphaned_test_procs();
     let socket = tmp.join("bus");
     let mut daemon = Command::new("dbus-daemon")
-        .args(["--session", "--fork", "--print-address=1"])
+        // NOTE: NO --fork. With --fork the tracked Child is the exited
+        // parent and the real bus daemon LEAKS (82 were found alive at the
+        // Amendment-5 audit); foreground mode keeps it killable in Drop.
+        .args(["--session", "--print-address=1"])
         .arg(format!("--address=unix:path={}", socket.display()))
+        .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -159,6 +249,7 @@ fn spawn_private_bus(tmp: &Path) -> PrivateBus {
     let monitor = Command::new("dbus-monitor")
         .arg("--address")
         .arg(&address)
+        .process_group(0)
         .stdout(Stdio::from(std::fs::File::create(&monitor_path).unwrap()))
         .stderr(Stdio::null())
         .spawn()
@@ -223,6 +314,10 @@ fn spawn_harness_full(
     bar_right: Option<&[&str]>,
     apps: &[&str], // app NAMES; bodies are generated
     dbus_addr: Option<&str>,
+    // Tier 0.9: fractional scale for THIS harness only (explicit param —
+    // a process-global env var raced with parallel tests spawning their
+    // own harnesses, flipping them to 1.25; flake fixed, not retried).
+    scale: Option<f64>,
 ) -> Harness {
     let unique = format!(
         "{}-{}-{}",
@@ -230,6 +325,7 @@ fn spawn_harness_full(
         std::process::id(),
         Instant::now().elapsed().as_nanos() // extra uniqueness per test
     );
+    assert_no_orphaned_test_procs();
     let tmp = std::env::temp_dir().join(&unique);
     std::fs::create_dir_all(tmp.join("runtime")).unwrap();
     write_isolated_config(&tmp, animations, bar_right);
@@ -283,12 +379,10 @@ fn spawn_harness_full(
     }
     cmd.env("XDG_RUNTIME_DIR", tmp.join("runtime"));
     // Tier 0.9: fractional scale (wp_fractional_scale_v1 preferred_scale).
-    if let Some(scale) = std::env::var("LME_E2E_SCALE")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-    {
+    if let Some(scale) = scale {
         cmd.arg("--scale").arg(scale.to_string());
     }
+    cmd.process_group(0);
     // The mock compositor logs (slog) to STDOUT — pipe and tee it.
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     let mut compositor = cmd.spawn().expect("spawn mock-compositor");
@@ -341,7 +435,8 @@ fn spawn_harness_full(
         dcmd.env("DBUS_SESSION_BUS_ADDRESS", addr);
     }
     dcmd.stdout(Stdio::null())
-        .stderr(std::fs::File::create(tmp.join("shell.log")).unwrap());
+        .stderr(std::fs::File::create(tmp.join("shell.log")).unwrap())
+        .process_group(0);
     let mut daemon = dcmd.spawn().expect("spawn lme-shell daemon");
 
     // wait for the daemon IPC socket
@@ -381,6 +476,7 @@ fn spawn_harness(
         animations,
         None,
         &[],
+        None,
         None,
     )
 }
@@ -600,6 +696,7 @@ fn launcher_types_and_launches() {
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
         None,
+        None,
     );
     std::thread::sleep(Duration::from_millis(900));
     harness.msg(&["toggle", "launcher"]);
@@ -680,6 +777,7 @@ fn golden_launcher() {
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
         None,
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -738,6 +836,7 @@ fn pointer_click_opens_launcher() {
         None,
         &[],
         None,
+        None,
     );
     assert!(
         harness.wait_log("created (lme-launcher)", Duration::from_secs(10)),
@@ -760,6 +859,7 @@ fn launcher_row_click_launches_and_closes() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
         None,
     );
     std::thread::sleep(Duration::from_millis(800));
@@ -789,6 +889,7 @@ fn outside_click_dismisses_launcher() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
         None,
     );
     std::thread::sleep(Duration::from_millis(800));
@@ -826,6 +927,7 @@ fn golden_launcher_wheel_notch() {
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
         None,
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -855,6 +957,7 @@ fn golden_launcher_touchpad_scroll() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
         None,
     );
     std::thread::sleep(Duration::from_millis(800));
@@ -887,6 +990,7 @@ fn golden_launcher_scroll_stop_resets() {
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
         None,
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -915,6 +1019,7 @@ fn golden_wheel_over_audio_pill() {
         false,
         Some(&["audio"]),
         &[],
+        None,
         None,
     );
     assert!(
@@ -952,6 +1057,7 @@ fn click_audio_pill_shows_control_notice() {
         false,
         Some(&["audio"]),
         &[],
+        None,
         None,
     );
     assert!(
@@ -1001,6 +1107,7 @@ fn dbus_notification_toast_lifecycle() {
         None,
         &[],
         Some(&bus.address),
+        None,
     );
     // the daemon must own the name on the private bus
     let out = Command::new("busctl")
@@ -1110,6 +1217,7 @@ fn dbus_dnd_suppresses_toasts() {
         None,
         &[],
         Some(&bus.address),
+        None,
     );
     // DND on (until turned off)
     let reply = harness.msg(&["dnd", "-1"]);
@@ -1143,6 +1251,7 @@ fn local_notification_ipc() {
         false,
         None,
         &[],
+        None,
         None,
     );
     harness.msg(&["notify", "Shell message", "Local body"]);
@@ -1228,6 +1337,7 @@ fn tray_sni_lifecycle() {
         Some(&["tray"]),
         &[],
         Some(&bus.address),
+        None,
     );
 
     // the daemon must own the watcher name on the private bus
@@ -1244,18 +1354,21 @@ fn tray_sni_lifecycle() {
 
     // the fake item: register → bar button → tray panel
     let sni_log = bus_tmp.join("sni.log");
-    let mut sni = Command::new(
-        target_dir()
-            .join(profile_dir())
-            .join("examples")
-            .join("fake_sni"),
-    )
-    .arg(&sni_log)
-    .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn()
-    .expect("spawn fake_sni");
+    let mut sni = ChildGuard(
+        Command::new(
+            target_dir()
+                .join(profile_dir())
+                .join("examples")
+                .join("fake_sni"),
+        )
+        .arg(&sni_log)
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .process_group(0)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn fake_sni"),
+    );
     assert!(
         sni_wait_log(&sni_log, "registered", Duration::from_secs(15)),
         "fake_sni must register with the watcher"
@@ -1313,8 +1426,7 @@ fn tray_sni_lifecycle() {
     assert_matches_golden(&png, "tray-panel.png");
 
     // killing the item removes it (NameOwnerChanged) and closes the panel
-    let _ = sni.kill();
-    let _ = sni.wait();
+    sni.kill_now(); // removal assertion follows; Drop is idempotent
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let state = harness.msg(&["tray"]);
@@ -1345,22 +1457,6 @@ fn tray_sni_lifecycle() {
 fn fractional_scale_golden() {
     let png = capture_png("bar-fractional-125", 0);
     let _ = std::fs::remove_file(&png);
-    // SAFETY-of-isolation: the env var is process-global; this test is the
-    // only user and spawns its harness immediately (tests run on their own
-    // threads — cargo runs them in parallel, so use a lock-style guard).
-    struct ScaleEnv;
-    impl ScaleEnv {
-        fn set(scale: &str) -> Self {
-            std::env::set_var("LME_E2E_SCALE", scale);
-            ScaleEnv
-        }
-    }
-    impl Drop for ScaleEnv {
-        fn drop(&mut self) {
-            std::env::remove_var("LME_E2E_SCALE");
-        }
-    }
-    let _guard = ScaleEnv::set("1.25");
     let harness = spawn_harness_full(
         "bar-frac125",
         "1280x800",
@@ -1371,8 +1467,8 @@ fn fractional_scale_golden() {
         None,
         &[],
         None,
+        Some(1.25),
     );
-    drop(_guard);
     assert!(
         harness.wait_log("CAPTURED", Duration::from_secs(15)),
         "fractional-scale capture never happened"
@@ -1384,7 +1480,11 @@ fn fractional_scale_golden() {
         "viewport commit line never appeared"
     );
     let image = decode_png(&png);
-    assert_eq!((image.width, image.height), (1280, 42), "logical capture size");
+    assert_eq!(
+        (image.width, image.height),
+        (1280, 42),
+        "logical capture size"
+    );
     let meta = std::fs::metadata(&png).expect("capture file");
     assert!(
         meta.len() <= 200 * 1024,
@@ -1392,6 +1492,165 @@ fn fractional_scale_golden() {
         meta.len()
     );
     assert_matches_golden(&png, "bar-fractional-125.png");
+}
+
+// ---------------------------------------------------------------------------
+// Amendment 5 (hygiene 4): the daemon must SURVIVE a world without inotify
+// (an EMFILE at inotify_init used to kill it at startup) and keep hot reload
+// working through the 5 s mtime poll. This test forces the poll path via
+// settings.json "hotReload": "poll", changes barFontSize mid-run and
+// golden-compares a capture taken after the next poll tick. The bespoke
+// harness exists because spawn_harness_full would overwrite settings.json
+// with its fixed set.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn settings_poll_hot_reload_survives_without_inotify() {
+    assert_no_orphaned_test_procs();
+    let png = capture_png("bar-poll-hotreload", 0);
+    let _ = std::fs::remove_file(&png);
+
+    let unique = format!(
+        "poll-hr-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    );
+    let tmp = std::env::temp_dir().join(&unique);
+    std::fs::create_dir_all(tmp.join("runtime")).unwrap();
+    std::fs::write(tmp.join("fake-niri.json"), fake_state_json()).unwrap();
+    std::fs::write(tmp.join("fake-system.json"), fake_system_json()).unwrap();
+    let config_dir = tmp.join("config/lme-shell");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let settings = |font: i64| {
+        serde_json::json!({
+            "animations": false,
+            "opacity": 0.90,
+            "accent": "#9580ff",
+            "barStyle": "connected",
+            "barFontSize": font,
+            "barHeight": 42,
+            "hotReload": "poll",
+        })
+    };
+    // settings BEFORE the daemon starts: font 13 (the daemon must read the
+    // pre-spawn file, never the rewritten one, at startup)
+    std::fs::write(
+        config_dir.join("settings.json"),
+        serde_json::to_string_pretty(&settings(13)).unwrap(),
+    )
+    .unwrap();
+
+    // mock compositor, timed capture at 12 s (well past the ~5 s poll tick)
+    let mut cmd = Command::new(find_bin("mock-compositor"));
+    cmd.args([
+        "--mode",
+        "idle",
+        "--duration",
+        "60",
+        "--fps",
+        "120",
+        "--output",
+        "1280x800",
+        "--socket",
+        &unique,
+        "--capture-at",
+        "12000",
+    ])
+    .arg("--capture-out")
+    .arg(&png);
+    cmd.env("XDG_RUNTIME_DIR", tmp.join("runtime"));
+    cmd.process_group(0);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut compositor = cmd.spawn().expect("spawn mock-compositor");
+    let stdout = compositor.stdout.take().unwrap();
+    let log_path = tmp.join("compositor.log");
+    let log_for_thread = log_path.clone();
+    std::thread::spawn(move || {
+        let mut file = std::fs::File::create(&log_for_thread).expect("create compositor log");
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    use std::io::Write as _;
+                    let _ = file.write_all(line.as_bytes());
+                }
+            }
+        }
+    });
+    let socket = tmp.join("runtime").join(&unique);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "compositor socket never appeared"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // daemon: no inotify watcher is created (settings force the poll path)
+    let mut dcmd = Command::new(find_bin("lme-shell"));
+    dcmd.arg("daemon").arg("--dry-run");
+    dcmd.env("WAYLAND_DISPLAY", &unique)
+        .env("XDG_RUNTIME_DIR", tmp.join("runtime"))
+        .env("XDG_CONFIG_HOME", tmp.join("config"))
+        .env("HOME", &tmp)
+        .env("LME_SHELL_FAKE_STATE", tmp.join("fake-niri.json"))
+        .env("LME_SHELL_FAKE_STATE_SYSTEM", tmp.join("fake-system.json"))
+        .env_remove("NIRI_SOCKET")
+        .env_remove("LME_SHELL_PERF")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS");
+    dcmd.stdout(Stdio::null())
+        .stderr(std::fs::File::create(tmp.join("shell.log")).unwrap())
+        .process_group(0);
+    let mut daemon = dcmd.spawn().expect("spawn lme-shell daemon");
+    let daemon_sock = tmp.join("runtime").join("lme-shell.sock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !daemon_sock.exists() {
+        assert!(Instant::now() < deadline, "daemon socket never appeared");
+        let _ = daemon.try_wait().expect("daemon alive check");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let harness = Harness {
+        tmp: tmp.clone(),
+        _daemon: daemon,
+        compositor,
+        log_path,
+    };
+
+    // Change settings mid-run: font 13 -> 26. Only the 5 s poll can see
+    // this (no inotify watcher exists in this daemon).
+    std::thread::sleep(Duration::from_millis(600));
+    std::fs::write(
+        config_dir.join("settings.json"),
+        serde_json::to_string_pretty(&settings(26)).unwrap(),
+    )
+    .unwrap();
+
+    // The daemon must still be alive and serving IPC.
+    let status = harness.msg(&["status"]);
+    assert!(
+        status.contains("\"version\""),
+        "daemon alive and serving IPC on poll mode: {status}"
+    );
+
+    // Capture at 12 s: after the poll tick, the bar shows font 26.
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(25)),
+        "timed capture never happened"
+    );
+    let image = decode_png(&png);
+    assert_eq!(
+        (image.width, image.height),
+        (1280, 42),
+        "bar size unchanged"
+    );
+    let meta = std::fs::metadata(&png).expect("capture file");
+    assert!(meta.len() <= 200 * 1024, "golden candidate too large");
+    assert_matches_golden(&png, "bar-poll-hotreload.png");
 }
 
 // ---------------------------------------------------------------------------
@@ -1443,21 +1702,25 @@ fn mpris_media_module() {
         Some(&["media"]),
         &[],
         Some(&bus.address),
+        None,
     );
 
     let mpris_log = bus_tmp.join("mpris.log");
-    let mut player = Command::new(
-        target_dir()
-            .join(profile_dir())
-            .join("examples")
-            .join("fake_mpris"),
-    )
-    .arg(&mpris_log)
-    .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .spawn()
-    .expect("spawn fake_mpris");
+    let mut player = ChildGuard(
+        Command::new(
+            target_dir()
+                .join(profile_dir())
+                .join("examples")
+                .join("fake_mpris"),
+        )
+        .arg(&mpris_log)
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .process_group(0)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn fake_mpris"),
+    );
 
     // the shell tracks the player and picks its title for the bar pill
     if !mpris_wait_msg(&harness, "Native track", Duration::from_secs(15)) {
@@ -1527,8 +1790,7 @@ fn mpris_media_module() {
     );
 
     // kill the player: NameOwnerChanged removes it, the pill hides
-    let _ = player.kill();
-    let _ = player.wait();
+    player.kill_now(); // removal assertion follows; Drop is idempotent
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let state = harness.msg(&["media"]);

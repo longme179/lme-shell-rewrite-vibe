@@ -68,7 +68,7 @@ impl RenderBackend for CpuRenderer {
     }
 
     fn render(&mut self, cmds: &[DrawCmd], fonts: &mut FontBook, background: Color, scale: f32) {
-        let s = if scale.is_finite() && scale >= 0.5 && scale <= 10.0 {
+        let s = if scale.is_finite() && (0.5..=10.0).contains(&scale) {
             scale
         } else {
             1.0
@@ -481,6 +481,102 @@ fn blend_mask_px(
 }
 
 #[cfg(test)]
+mod scale_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::draw::DrawCmd;
+    use crate::geom::Rect;
+
+    fn px_at(r: &CpuRenderer, x: u32, y: u32) -> (u8, u8, u8, u8) {
+        let i = ((y * r.pixmap.width() + x) * 4) as usize;
+        let d = r.bgra();
+        (d[i + 2], d[i + 1], d[i], d[i + 3]) // BGRA -> RGBA
+    }
+
+    #[test]
+    fn rect_scales_with_render_scale() {
+        // logical 128x32 surface at scale 1.25 -> 160x40 pixmap
+        let mut r = CpuRenderer::new(160, 40);
+        let cmd = DrawCmd::RoundedRect {
+            rect: Rect::new(10.0, 10.0, 100.0, 20.0),
+            radius: 0.0,
+            fill: Some(Color::rgb(1.0, 1.0, 1.0)),
+            border: None,
+            clip: None,
+        };
+        r.render(
+            &[cmd],
+            &mut FontBook::new_for_tests(),
+            Color::rgba(0.0, 0.0, 0.0, 0.0),
+            1.25,
+        );
+        // center of the rect: logical (60,20) -> physical (75,25)
+        assert_eq!(px_at(&r, 75, 25).3, 255, "rect center filled at 1.25x");
+        // logical x=111 (outside the 10..110 rect) -> physical 139: empty
+        assert_eq!(px_at(&r, 139, 25).3, 0, "right of rect empty");
+        // logical x=111 at scale 1.0 would be 111 — the scaled surface is wider
+        assert!(r.pixmap.width() == 160);
+    }
+
+    #[test]
+    fn text_metrics_stay_logical_across_scales() {
+        let mut f1 = FontBook::new_for_tests();
+        let mut f2 = FontBook::new_for_tests();
+        let w1 = f1.line("Shell", 13.0, 400).width;
+        f2.set_render_scale(1.25);
+        let w2 = f2.line("Shell", 13.0, 400).width;
+        assert!(
+            (w1 - w2).abs() < 1.5,
+            "logical width must not change with scale: {w1} vs {w2}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod premul_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::draw::DrawCmd;
+    use crate::geom::Rect;
+
+    #[test]
+    fn premultiplied_invariant_holds_at_fractional_scale() {
+        let mut r = CpuRenderer::new(1600, 53);
+        let cmds = vec![
+            DrawCmd::RoundedRect {
+                rect: Rect::new(0.0, 0.0, 1280.0, 42.0),
+                radius: 0.0,
+                fill: Some(Color::rgba(0.22, 0.20, 0.28, 0.9)),
+                border: None,
+                clip: None,
+            },
+            DrawCmd::RoundedRect {
+                rect: Rect::new(1000.0, 8.0, 260.0, 26.0),
+                radius: 13.0,
+                fill: Some(Color::rgba(0.58, 0.50, 1.0, 0.9)),
+                border: None,
+                clip: None,
+            },
+        ];
+        r.render(
+            &cmds,
+            &mut FontBook::new_for_tests(),
+            Color::rgba(0.0, 0.0, 0.0, 0.0),
+            1.25,
+        );
+        let d = r.bgra();
+        for i in (0..d.len()).step_by(4) {
+            let (b, g, rr, a) = (d[i], d[i + 1], d[i + 2], d[i + 3]);
+            assert!(
+                rr <= a && g <= a && b <= a,
+                "premultiplication violated at px {}: rgb=({rr},{g},{b}) a={a}",
+                i / 4
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::geom::Rect;
@@ -513,92 +609,5 @@ mod tests {
         assert_eq!(r.width(), 32);
         r.resize(48, 24);
         assert_eq!((r.width(), r.height()), (48, 24));
-    }
-}
-
-#[cfg(test)]
-mod scale_tests {
-    use super::*;
-    use crate::color::Color;
-    use crate::draw::DrawCmd;
-    use crate::geom::{Point, Rect};
-
-    fn px_at(r: &CpuRenderer, x: u32, y: u32) -> (u8, u8, u8, u8) {
-        let i = ((y * r.pixmap.width() + x) * 4) as usize;
-        let d = r.bgra();
-        (d[i + 2], d[i + 1], d[i], d[i + 3]) // BGRA -> RGBA
-    }
-
-    #[test]
-    fn rect_scales_with_render_scale() {
-        // logical 128x32 surface at scale 1.25 -> 160x40 pixmap
-        let mut r = CpuRenderer::new(160, 40);
-        let cmd = DrawCmd::RoundedRect {
-            rect: Rect::new(10.0, 10.0, 100.0, 20.0),
-            radius: 0.0,
-            fill: Some(Color::rgb(1.0, 1.0, 1.0)),
-            border: None,
-            clip: None,
-        };
-        r.render(&[cmd], &mut FontBook::new_for_tests(), Color::rgba(0.0, 0.0, 0.0, 0.0), 1.25);
-        // center of the rect: logical (60,20) -> physical (75,25)
-        assert_eq!(px_at(&r, 75, 25).3, 255, "rect center filled at 1.25x");
-        // logical x=111 (outside the 10..110 rect) -> physical 139: empty
-        assert_eq!(px_at(&r, 139, 25).3, 0, "right of rect empty");
-        // logical x=111 at scale 1.0 would be 111 — the scaled surface is wider
-        assert!(r.pixmap.width() == 160);
-    }
-
-    #[test]
-    fn text_metrics_stay_logical_across_scales() {
-        let mut f1 = FontBook::new_for_tests();
-        let mut f2 = FontBook::new_for_tests();
-        let w1 = f1.line("Shell", 13.0, 400).width;
-        f2.set_render_scale(1.25);
-        let w2 = f2.line("Shell", 13.0, 400).width;
-        assert!(
-            (w1 - w2).abs() < 1.5,
-            "logical width must not change with scale: {w1} vs {w2}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod premul_tests {
-    use super::*;
-    use crate::color::Color;
-    use crate::draw::DrawCmd;
-    use crate::geom::Rect;
-    use crate::text::FontBook;
-
-    #[test]
-    fn premultiplied_invariant_holds_at_fractional_scale() {
-        let mut r = CpuRenderer::new(1600, 53);
-        let cmds = vec![
-            DrawCmd::RoundedRect {
-                rect: Rect::new(0.0, 0.0, 1280.0, 42.0),
-                radius: 0.0,
-                fill: Some(Color::rgba(0.22, 0.20, 0.28, 0.9)),
-                border: None,
-                clip: None,
-            },
-            DrawCmd::RoundedRect {
-                rect: Rect::new(1000.0, 8.0, 260.0, 26.0),
-                radius: 13.0,
-                fill: Some(Color::rgba(0.58, 0.50, 1.0, 0.9)),
-                border: None,
-                clip: None,
-            },
-        ];
-        r.render(&cmds, &mut FontBook::new_for_tests(), Color::rgba(0.0, 0.0, 0.0, 0.0), 1.25);
-        let d = r.bgra();
-        for i in (0..d.len()).step_by(4) {
-            let (b, g, rr, a) = (d[i], d[i + 1], d[i + 2], d[i + 3]);
-            assert!(
-                rr <= a && g <= a && b <= a,
-                "premultiplication violated at px {}: rgb=({rr},{g},{b}) a={a}",
-                i / 4
-            );
-        }
     }
 }

@@ -9,9 +9,66 @@ documents remain as history.
 
 ## Current step
 
-**Session 2026-10-13 (Amendment 4): robustness + registry + D25.** Read
+**Session 2026-10-13 (Amendment 5): Tier 0.9 landed + hygiene 1-5 done.**
+Read docs/MISSION_AMENDMENT_5.md (debugging cap, freeze rules),
 docs/MISSION_AMENDMENT_4.md (work order), docs/RESUME.md (fresh-sandbox
-bootstrap), docs/ZBUS_NOTES.md (before any D-Bus work). This session:
+bootstrap), docs/ZBUS_NOTES.md (before any D-Bus work), and
+docs/KNOWN_ISSUES.md (live issue list). This session:
+
+1. **Tier 0.9 fractional scale DONE** (D26): the previous session's WIP
+   was already correct (mock reads via pread; fresh wl_buffer per frame —
+   no live bug in the three mock-side hypotheses). Hardened to the
+   Amendment 5 safety design: wp_viewport objects are created ONLY on a
+   non-1.0 preferred_scale, so scale 1.0 is byte-identical to TIER-1
+   (all 12 other goldens unchanged). e2e fractional_scale_golden at 1.25
+   (1600x53 buffer, 1280x42 destination, 9.3 KB golden, VLM-inspected).
+   The WIP's LME_E2E_SCALE process-global env var was a REAL race (any
+   parallel golden could inherit 1.25 — caught 1-in-4, fixed as an
+   explicit harness parameter, not retried).
+2. **Hygiene 1 done**: failed-theory code REMOVED (dbus_util.rs deleted:
+   no_cache_proxy + drive_executor_forever were D25 ladder steps 3-4,
+   "stall identical" — prophylaxis in notifications/tray, no test ever
+   needed them). ZBUS_NOTES rules 3-4 marked RETRACTED/hypothesis; the
+   D25 "wakeup loss" mechanism marked hypothesis (never reproduced in a
+   minimal probe); what is ESTABLISHED is the observable + the
+   self-healing fix.
+3. **Hygiene 2 done (test-count accounting)**: NO tests were removed —
+   static #[test] counts went 141 (1df00cc) -> 143 (0595ea5, +2
+   click_ids registry tests). The "137 -> 134" delta was a counting
+   artifact (the Amendment-4 session's 134 summed a subset; ignored and
+   legacy-reference-skipped tests were counted differently). Current
+   exact number: **147 passed + 4 ignored** (cargo test --workspace).
+4. **Hygiene 3 done (leaked test processes)**: 82 leaked dbus-daemons
+   found and killed — the PrivateBus used `--fork`, so the tracked Child
+   was the exited parent and the real bus daemon leaked per test. Now:
+   foreground bus, every long-lived e2e child (daemon, mock, bus,
+   monitor, fakes) in its OWN process group (process_group(0)) killed
+   group-wide + reaped in Drop (kill_group), fakes hold ChildGuards
+   (panic-safe), Harness Drop also removes its tmp dir (560 stale dirs
+   at audit), and every harness/bus spawn calls
+   assert_no_orphaned_test_procs() which fails fast listing orphaned
+   (ppid 1) leftovers with kill instructions.
+5. **Hygiene 4 done (EMFILE survival)**: inotify_init failure no longer
+   kills the daemon — it logs once and degrades to a 5 s
+   settings/palette mtime poll (MtimePoll, unit-tested for
+   create/modify/delete; insert_mtime_poll repeating timer; PERF.md
+   register updated). Selectable explicitly via settings.json
+   "hotReload": "poll" (NFS homes). e2e
+   settings_poll_hot_reload_survives_without_inotify: forced-poll daemon
+   survives, serves IPC, and hot-reloads barFontSize 13 -> 26 through
+   the poll (12 s capture golden, VLM-inspected).
+6. **Hygiene 5 done**: scripts/e2e-x10.sh (resumable START END args)
+   runs the golden suite N times; run at every tier end; a flake becomes
+   a KNOWN_ISSUES entry or a fix (KI-1 records the one ~1/13 flake
+   observed mid-session, with ruled-outs and the EMFILE hypothesis).
+
+**Next: Tier 2 in the Amendment 4 order — control center shell + Controls
+tab first, then audio, brightness, NetworkManager, BlueZ; TIER-2A delivery
+after control center + audio + brightness + network + Bluetooth. Fake
+D-Bus service + private-bus e2e + golden per module (tray/MPRIS method);
+inspect goldens with the image-viewing skill before each delivery.**
+
+Previous session (Amendment 4: robustness + registry + D25):
 
 1. Mission docs saved (AMENDMENT_3 reconstructed, AMENDMENT_4, RESUME.md).
 2. deliver.sh: 7 resumable stages + state markers, release-only replay in
@@ -119,8 +176,9 @@ register lives in docs/PERF.md; re-measure idle at every tier end.**
 ## Gate status (HEAD)
 
 `cargo fmt` ✓ · `cargo clippy --workspace --all-targets -D warnings` ✓ ·
-`cargo test --workspace`: **93 passed, 0 failed, 4 ignored** (lme-backend
+`cargo test --workspace`: **147 passed, 0 failed, 4 ignored** (lme-backend
 goldens ignored with upstream-drift reasons — docs/UPSTREAM_SYNC.md).
+Tier 0.9 + hygiene gate: e2e x10 green (scripts/e2e-x10.sh).
 
 ## Measurements (release build, sandbox cloud CPU; docs/PERF.md)
 
