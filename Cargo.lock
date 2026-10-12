@@ -776,7 +776,10 @@ dependencies = [
 name = "lme-shell"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
+ "async-io",
  "calloop",
+ "futures-lite",
  "inotify",
  "lme-backend",
  "lme-ui",

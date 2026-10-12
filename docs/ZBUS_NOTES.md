@@ -85,3 +85,34 @@ bus WITHOUT the service proves no panic + control hidden.
 Before matching any `zvariant::Value` that came off the bus, ask: "could this
 be a variant wrapper?" — if the signature contains `v`, unwrap first. Grep
 `Value::Value` in this repo to see every place that lesson applied.
+
+## 9. zbus 5.19 blocking API on shared connections + wakeup loss (D25 — READ BEFORE ANY NEW MODULE)
+
+The MPRIS e2e exposed an intermittent (40–60%) wakeup loss inside
+zbus 5.19/async-io when used from the full daemon: a Get goes out on the
+wire, the peer replies, the socket drains — and the reply is never
+dispatched to the blocked caller. Not the property cache, not the
+executor driver exit, not the thread shape: even a canonical
+single-thread `async_io::block_on` shape stalls in the daemon context,
+while the identical standalone probe (examples/mpris_probe.rs) is 12/12
+stable.
+
+Rules distilled:
+
+1. Prefer the ONE-THREAD/ONE-block_on shape for new D-Bus modules (see
+   mpris.rs D25): connection, signal streams and calls as futures in a
+   single async block, sources merged into one Stream. The daemon's
+   still-blocking modules (notifications, tray) keep the D20 thread
+   pattern — they serve object servers and have never flaked — but do
+   NOT extend that pattern to new client-only modules.
+2. EVERY push-driven feed needs a self-healing poll: a reconcile tick
+   (ListNames diff or equivalent) + per-call timeouts raced against a
+   timer. A lost wakeup then costs one tick, not a hang.
+3. `CacheProperties::No` proxies for property reads (dbus_util::
+   no_cache_proxy): plain Get calls, no background cache task.
+4. `dbus_util::drive_executor_forever` for blocking connections: zbus's
+   internal driver thread exits when the executor drains and never
+   restarts ("failure to do so will result in hangs" — zbus docs).
+5. Debug knobs: LME_SHELL_NO_NOTIF / LME_SHELL_NO_TRAY skip modules for
+   bisecting; LME_MPRIS_DEBUG prints feed markers; mpris_probe.rs is the
+   standalone pattern reference.

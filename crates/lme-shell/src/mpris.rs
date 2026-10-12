@@ -4,19 +4,28 @@
 //! `Mpris.players.values.find(p => p.isPlaying) || players[0]`, caption
 //! `trackTitle || identity`, module hidden while no player exists).
 //!
-//! Threading (ADR 0002 / D4, the notifications/tray pattern): one manager
-//! thread owns a blocking connection; per-player PropertiesChanged
-//! listeners and the NameOwnerChanged watcher forward ManagerMsgs to it,
-//! and it forwards MprisEvents to the daemon's calloop loop. A missing
-//! session bus is non-fatal — the media module simply stays hidden.
+//! Threading (D25): ONE thread runs the whole module inside a single
+//! `async_io::block_on` — connection, NameOwnerChanged watcher, per-player
+//! PropertiesChanged streams and every method call live as futures on one
+//! executor, selected with `futures_lite::stream::select_all`. The previous
+//! shape (a zbus BLOCKING connection shared by manager/watcher/listener
+//! threads, the D20 pattern) hit an intermittent zbus 5.19 deadlock: the
+//! first cross-thread blocking `get_property` after a signal-triggered
+//! wake sometimes never saw its reply (Get went out, peer replied, socket
+//! drained — the reply was never dispatched; every executor driver parked
+//! and the async-io reactor had no interests). One-thread/one-block_on is
+//! the canonical zbus shape and cannot hit that cross-thread waker chain.
+//! A missing session bus is non-fatal — the module simply stays hidden.
 //!
 //! Scope (Tier 1.2): display feed only. Transport controls (PlayPause /
 //! Next / Previous) land with the Tier-2 activity island, so the handle
-//! carries no commands yet — it only keeps the manager alive.
+//! carries no commands yet — it only keeps the feed alive.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use futures_lite::stream::Stream;
 use zbus::zvariant::OwnedValue;
 
 pub const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -60,10 +69,10 @@ impl MprisPlayer {
 }
 
 // ---------------------------------------------------------------------------
-// Events / manager plumbing
+// Events / feed plumbing
 // ---------------------------------------------------------------------------
 
-/// Manager → daemon (calloop channel).
+/// Feed → daemon (calloop channel).
 pub enum MprisEvent {
     /// A player appeared or refreshed (upsert by bus name).
     Player(Box<MprisPlayer>),
@@ -71,161 +80,306 @@ pub enum MprisEvent {
     Gone { bus: String },
 }
 
-/// Everything the manager thread consumes. Refresh messages collapse:
-/// the listener only forwards interesting PropertiesChanged members.
-enum ManagerMsg {
-    AddPlayer { bus: String },
-    Gone { bus: String },
-    Refresh { bus: String },
-}
-
-/// Handle to the running manager. Dropping it stops the manager thread,
-/// which drops the connection and every listener. No commands yet —
-/// controls arrive with the Tier-2 activity island.
+/// Handle to the running feed. Dropping the last clone stops the feed
+/// thread (the shutdown channel closes and the select loop breaks), which
+/// drops the connection and every stream. No commands yet — controls
+/// arrive with the Tier-2 activity island.
 #[derive(Clone)]
 pub struct MprisHandle {
-    _tx: Arc<std::sync::mpsc::Sender<ManagerMsg>>,
+    _tx: async_channel::Sender<()>,
 }
 
 /// Start the MPRIS feed. Fails softly (no session bus) exactly like
 /// notifications::spawn / tray::spawn.
 pub fn spawn(tx: calloop::channel::Sender<MprisEvent>) -> Result<MprisHandle, String> {
-    let (mgr_tx, mgr_rx) = std::sync::mpsc::channel::<ManagerMsg>();
-    let mgr_tx = Arc::new(mgr_tx);
-    let conn = zbus::blocking::connection::Builder::session()
+    let (stop_tx, stop_rx) = async_channel::unbounded::<()>();
+    std::thread::Builder::new()
+        .name("lme-mpris".into())
+        .spawn(move || {
+            if let Err(e) = async_io::block_on(run_feed(tx, stop_rx)) {
+                eprintln!("lme-shell: mpris feed ended: {e}");
+            }
+        })
+        .map_err(|e| format!("spawn mpris thread: {e}"))?;
+    Ok(MprisHandle { _tx: stop_tx })
+}
+
+/// What wakes the feed loop.
+enum FeedEvent {
+    /// A NameOwnerChanged message (decoded in the loop).
+    Owner(zbus::message::Message),
+    /// A player emitted PropertiesChanged (bus name).
+    Refresh(String),
+    /// Periodic reconciliation tick (D25: the push signal path
+    /// intermittently loses its wakeup inside zbus/async-io in the full
+    /// daemon; the tick makes the feed eventually consistent within ~1 s
+    /// regardless — missed registers, missed NameLost and hung property
+    /// reads all recover on the next tick).
+    Tick,
+    /// All handles dropped — shut down.
+    Stop,
+}
+
+/// Reconcile cadence: fast while waiting for the first player, slow while
+/// one is live (idle budget: ≤1 wakeup/s; see docs/PERF.md).
+const TICK_EMPTY: std::time::Duration = std::time::Duration::from_secs(1);
+const TICK_LIVE: std::time::Duration = std::time::Duration::from_secs(5);
+/// Upper bound for any single D-Bus round-trip inside the feed (a wedged
+/// call must not block the tick loop; zbus's own default is 25 s).
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Race a future against [`CALL_TIMEOUT`] (Err(()) = timed out).
+async fn with_timeout<T>(fut: impl std::future::Future<Output = T>) -> Result<T, ()> {
+    futures_lite::future::or(
+        async {
+            async_io::Timer::after(CALL_TIMEOUT).await;
+            Err(())
+        },
+        async { Ok(fut.await) },
+    )
+    .await
+}
+
+/// The feed's event sources, polled as one stream: the NameOwnerChanged
+/// stream, every player's PropertiesChanged stream and the shutdown
+/// channel. (futures-lite has no select_all; this is ~30 lines and keeps
+/// everything on the single feed thread.)
+struct Feeds {
+    stop: Pin<Box<async_channel::Receiver<()>>>,
+    owner: Option<Pin<Box<zbus::proxy::SignalStream<'static>>>>,
+    players: Vec<(String, Pin<Box<zbus::proxy::SignalStream<'static>>>)>,
+    /// One-shot timer, recreated after each tick.
+    timer: Pin<Box<async_io::Timer>>,
+}
+
+impl Feeds {
+    fn new(
+        stop_rx: async_channel::Receiver<()>,
+        owner_changes: zbus::proxy::SignalStream<'static>,
+    ) -> Self {
+        Self {
+            stop: Box::pin(stop_rx),
+            owner: Some(Box::pin(owner_changes)),
+            players: Vec::new(),
+            timer: Box::pin(async_io::Timer::after(TICK_EMPTY)),
+        }
+    }
+}
+
+impl Stream for Feeds {
+    type Item = FeedEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<FeedEvent>> {
+        let this = &mut *self;
+        // shutdown channel first (cheap; None = all handles dropped)
+        match this.stop.as_mut().poll_next(cx) {
+            Poll::Ready(Some(())) => return Poll::Ready(Some(FeedEvent::Stop)),
+            Poll::Ready(None) => return Poll::Ready(Some(FeedEvent::Stop)),
+            Poll::Pending => {}
+        }
+        // reconciliation tick (D25)
+        use std::future::Future as _;
+        if this.timer.as_mut().poll(cx).is_ready() {
+            let period = if this.players.is_empty() {
+                TICK_EMPTY
+            } else {
+                TICK_LIVE
+            };
+            this.timer = Box::pin(async_io::Timer::after(period));
+            return Poll::Ready(Some(FeedEvent::Tick));
+        }
+        if let Some(owner) = this.owner.as_mut() {
+            match owner.as_mut().poll_next(cx) {
+                Poll::Ready(Some(msg)) => return Poll::Ready(Some(FeedEvent::Owner(msg))),
+                // the owner stream never ends while the connection lives
+                Poll::Ready(None) => this.owner = None,
+                Poll::Pending => {}
+            }
+        }
+        let mut i = 0;
+        while i < this.players.len() {
+            match this.players[i].1.as_mut().poll_next(cx) {
+                Poll::Ready(Some(_)) => {
+                    return Poll::Ready(Some(FeedEvent::Refresh(this.players[i].0.clone())))
+                }
+                // player vanished without NameOwnerChanged: drop the stream
+                Poll::Ready(None) => {
+                    this.players.remove(i);
+                }
+                Poll::Pending => i += 1,
+            }
+        }
+        Poll::Pending
+    }
+}
+
+async fn run_feed(
+    tx: calloop::channel::Sender<MprisEvent>,
+    stop_rx: async_channel::Receiver<()>,
+) -> Result<(), String> {
+    let conn = zbus::connection::Builder::session()
         .map_err(|e| format!("session bus: {e}"))?
         .build()
+        .await
         .map_err(|e| format!("connect: {e}"))?;
+    if std::env::var_os("LME_MPRIS_DEBUG").is_some() {
+        eprintln!("lme-mpris: connected");
+    }
 
-    // Initial scan: every owned MediaPlayer2 name.
-    let dbus = zbus::blocking::Proxy::new(
+    let dbus = zbus::Proxy::new(
         &conn,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
         "org.freedesktop.DBus",
     )
+    .await
     .map_err(|e| format!("dbus proxy: {e}"))?;
+
+    // Subscribe BEFORE scanning (D25): a player that registers between the
+    // ListNames scan and the NameOwnerChanged subscription would be missed
+    // forever. Queued stream events + the players map deduplicate overlap.
+    let owner_changes = dbus
+        .receive_signal("NameOwnerChanged")
+        .await
+        .map_err(|e| format!("NameOwnerChanged subscribe: {e}"))?;
+    if std::env::var_os("LME_MPRIS_DEBUG").is_some() {
+        eprintln!("lme-mpris: subscribed");
+    }
+
+    // Initial scan: every owned MediaPlayer2 name.
     let names: Vec<String> = dbus
         .call("ListNames", &())
+        .await
         .map_err(|e| format!("ListNames: {e}"))?;
+
+    // Per-player PropertiesChanged streams. NB: subscribe on a
+    // Properties-INTERFACE proxy — zbus receive_* filters on the proxy's
+    // own interface, so a MediaPlayer2.Player proxy would never see
+    // PropertiesChanged (D24).
+    let mut feeds = Feeds::new(stop_rx, owner_changes);
     for name in names {
         if name.starts_with(MPRIS_PREFIX) {
-            // the manager thread's records deduplicate
-            mgr_tx
-                .send(ManagerMsg::AddPlayer { bus: name })
-                .expect("manager alive at spawn");
+            add_player(&conn, &tx, &mut feeds.players, &name).await;
         }
     }
 
-    // Owner changes: new players appear, quitting players disappear.
-    spawn_owner_watcher(&conn, &mgr_tx);
-
-    let handle_tx = Arc::clone(&mgr_tx);
-    std::thread::spawn(move || {
-        let mut records: HashMap<String, ()> = HashMap::new();
-        for msg in mgr_rx {
-            match msg {
-                ManagerMsg::AddPlayer { bus } => {
-                    if records.contains_key(&bus) {
+    // The feed loop: every source polled as one stream on this thread.
+    use futures_lite::StreamExt as _;
+    while let Some(ev) = feeds.next().await {
+        match ev {
+            FeedEvent::Stop => break,
+            FeedEvent::Tick => {
+                // Reconcile (D25): a full ListNames diff repairs anything
+                // the push path missed or lost to a wedged call.
+                let scan = with_timeout(dbus.call::<_, _, Vec<String>>("ListNames", &())).await;
+                let live = match scan {
+                    Err(()) => {
+                        eprintln!("lme-shell: mpris rescan timed out");
                         continue;
                     }
-                    match fetch_player(&conn, &bus) {
-                        Ok(player) => {
-                            records.insert(bus.clone(), ());
-                            spawn_player_listener(&conn, &mgr_tx, &bus);
-                            let _ = tx.send(MprisEvent::Player(Box::new(player)));
-                        }
-                        Err(e) => eprintln!("lme-shell: mpris {bus}: {e}"),
+                    Ok(Ok(names)) => names,
+                    Ok(Err(e)) => {
+                        eprintln!("lme-shell: mpris rescan: {e}");
+                        continue;
+                    }
+                };
+                let live: Vec<String> = live
+                    .into_iter()
+                    .filter(|n| n.starts_with(MPRIS_PREFIX))
+                    .collect();
+                for name in &live {
+                    if feeds.players.iter().all(|(b, _)| b != name) {
+                        add_player(&conn, &tx, &mut feeds.players, name).await;
                     }
                 }
-                ManagerMsg::Gone { bus } => {
-                    if records.remove(&bus).is_some() {
-                        let _ = tx.send(MprisEvent::Gone { bus });
-                    }
-                }
-                ManagerMsg::Refresh { bus } => {
-                    if records.contains_key(&bus) {
-                        match fetch_player(&conn, &bus) {
-                            Ok(player) => {
-                                let _ = tx.send(MprisEvent::Player(Box::new(player)));
-                            }
-                            Err(e) => eprintln!("lme-shell: mpris refresh {bus}: {e}"),
-                        }
-                    }
+                let stale: Vec<String> = feeds
+                    .players
+                    .iter()
+                    .map(|(b, _)| b.clone())
+                    .filter(|b| !live.contains(b))
+                    .collect();
+                for bus in stale {
+                    feeds.players.retain(|(b, _)| *b != bus);
+                    let _ = tx.send(MprisEvent::Gone { bus });
                 }
             }
+            FeedEvent::Owner(msg) => {
+                let Ok((name, old, new)) = msg.body().deserialize::<(String, String, String)>()
+                else {
+                    continue;
+                };
+                if !name.starts_with(MPRIS_PREFIX) {
+                    continue;
+                }
+                if new.is_empty() && !old.is_empty() {
+                    if feeds.players.iter().position(|(b, _)| *b == name).is_some() {
+                        feeds.players.retain(|(b, _)| *b != name);
+                        let _ = tx.send(MprisEvent::Gone { bus: name });
+                    }
+                } else if !new.is_empty()
+                    && old.is_empty()
+                    && feeds.players.iter().all(|(b, _)| *b != name)
+                {
+                    add_player(&conn, &tx, &mut feeds.players, &name).await;
+                }
+            }
+            FeedEvent::Refresh(bus) => match with_timeout(fetch_player(&conn, &bus)).await {
+                Err(()) => eprintln!("lme-shell: mpris refresh {bus}: timed out"),
+                Ok(Ok(player)) => {
+                    let _ = tx.send(MprisEvent::Player(Box::new(player)));
+                }
+                Ok(Err(e)) => eprintln!("lme-shell: mpris refresh {bus}: {e}"),
+            },
         }
-        // mgr_rx closed: daemon is shutting down; threads die with the conn.
-    });
-    Ok(MprisHandle { _tx: handle_tx })
+    }
+    Ok(())
 }
 
-/// NameOwnerChanged → AddPlayer / Gone (MediaPlayer2 names only).
-fn spawn_owner_watcher(
-    conn: &zbus::blocking::Connection,
-    mgr_tx: &Arc<std::sync::mpsc::Sender<ManagerMsg>>,
-) {
-    let Ok(proxy) = zbus::blocking::Proxy::new(
-        conn,
-        "org.freedesktop.DBus",
-        "/org/freedesktop/DBus",
-        "org.freedesktop.DBus",
-    ) else {
-        return;
-    };
-    let Ok(changes) = proxy.receive_signal("NameOwnerChanged") else {
-        return;
-    };
-    let tx = Arc::clone(mgr_tx);
-    std::thread::spawn(move || {
-        for msg in changes {
-            let Ok((name, old, new)) = msg.body().deserialize::<(String, String, String)>() else {
-                continue;
-            };
-            if !name.starts_with(MPRIS_PREFIX) {
-                continue;
-            }
-            let res = if new.is_empty() && !old.is_empty() {
-                tx.send(ManagerMsg::Gone { bus: name })
-            } else if !new.is_empty() && old.is_empty() {
-                tx.send(ManagerMsg::AddPlayer { bus: name })
-            } else {
-                continue;
-            };
-            if res.is_err() {
-                break;
-            }
-        }
-    });
-}
-
-/// One listener per player. NB: zbus `receive_all_signals` filters on the
-/// PROXY's interface — `org.freedesktop.DBus.Properties.PropertiesChanged`
-/// (the update signal real players emit) would never match a
-/// MediaPlayer2.Player proxy. Subscribe on a Properties-interface proxy at
-/// the same destination/path instead (D24).
-fn spawn_player_listener(
-    conn: &zbus::blocking::Connection,
-    mgr_tx: &Arc<std::sync::mpsc::Sender<ManagerMsg>>,
+/// Fetch the snapshot, subscribe to its property changes, announce it.
+async fn add_player(
+    conn: &zbus::Connection,
+    tx: &calloop::channel::Sender<MprisEvent>,
+    players: &mut Vec<(String, Pin<Box<zbus::proxy::SignalStream<'static>>>)>,
     bus: &str,
 ) {
-    let Ok(proxy) =
-        zbus::blocking::Proxy::new(conn, bus, MPRIS_PATH, "org.freedesktop.DBus.Properties")
-    else {
-        return;
-    };
-    let Ok(signals) = proxy.receive_signal("PropertiesChanged") else {
-        return;
-    };
-    let bus = bus.to_string();
-    let tx = Arc::clone(mgr_tx);
-    std::thread::spawn(move || {
-        for _msg in signals {
-            if tx.send(ManagerMsg::Refresh { bus: bus.clone() }).is_err() {
-                break;
+    let dbg = std::env::var_os("LME_MPRIS_DEBUG").is_some();
+    if dbg {
+        eprintln!("lme-mpris: add_player {bus} (fetching)");
+    }
+    match with_timeout(fetch_player(conn, bus)).await {
+        Err(()) => {
+            eprintln!("lme-shell: mpris {bus}: fetch timed out (will retry on tick)");
+        }
+        Ok(Ok(player)) => {
+            let sub = with_timeout(async {
+                let props = zbus::Proxy::new(
+                    conn,
+                    bus.to_string(),
+                    MPRIS_PATH,
+                    "org.freedesktop.DBus.Properties",
+                )
+                .await?;
+                props.receive_signal("PropertiesChanged").await
+            })
+            .await;
+            match sub {
+                Err(()) => {
+                    eprintln!("lme-shell: mpris listener {bus}: subscribe timed out");
+                }
+                Ok(Ok(stream)) => {
+                    players.push((bus.to_string(), Box::pin(stream)));
+                    let _ = tx.send(MprisEvent::Player(Box::new(player)));
+                }
+                Ok(Err(e)) => {
+                    eprintln!("lme-shell: mpris listener {bus}: {e}");
+                }
             }
         }
-    });
+        Ok(Err(e)) => eprintln!("lme-shell: mpris {bus}: {e}"),
+    }
+    if dbg {
+        eprintln!("lme-mpris: add_player {bus} done");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,17 +415,44 @@ impl crate::daemon::Shell {
 }
 
 /// Read one player snapshot (Identity + PlaybackStatus + Metadata).
-fn fetch_player(conn: &zbus::blocking::Connection, bus: &str) -> Result<MprisPlayer, String> {
-    let root = zbus::blocking::Proxy::new(conn, bus, MPRIS_PATH, ROOT_IFACE)
+/// CacheProperties::No (D25): plain `Get` calls, no background cache task.
+async fn fetch_player(conn: &zbus::Connection, bus: &str) -> Result<MprisPlayer, String> {
+    let root: zbus::Proxy<'_> = zbus::proxy::Builder::new(conn)
+        .destination(bus)
+        .map_err(|e| format!("destination: {e}"))?
+        .path(MPRIS_PATH)
+        .map_err(|e| format!("path: {e}"))?
+        .interface(ROOT_IFACE)
+        .map_err(|e| format!("interface: {e}"))?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
         .map_err(|e| format!("root proxy: {e}"))?;
-    let player = zbus::blocking::Proxy::new(conn, bus, MPRIS_PATH, PLAYER_IFACE)
+    let player: zbus::Proxy<'_> = zbus::proxy::Builder::new(conn)
+        .destination(bus)
+        .map_err(|e| format!("destination: {e}"))?
+        .path(MPRIS_PATH)
+        .map_err(|e| format!("path: {e}"))?
+        .interface(PLAYER_IFACE)
+        .map_err(|e| format!("interface: {e}"))?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
         .map_err(|e| format!("player proxy: {e}"))?;
 
     let identity: String = root
         .get_property("Identity")
+        .await
         .unwrap_or_else(|_| bus.trim_start_matches(MPRIS_PREFIX).to_string());
-    let status: String = player.get_property("PlaybackStatus").unwrap_or_default();
-    let metadata: HashMap<String, OwnedValue> = player.get_property("Metadata").unwrap_or_default();
+    if std::env::var_os("LME_MPRIS_DEBUG").is_some() {
+        eprintln!("lme-mpris: fetched Identity={identity}");
+    }
+    let status: String = player
+        .get_property("PlaybackStatus")
+        .await
+        .unwrap_or_default();
+    let metadata: HashMap<String, OwnedValue> =
+        player.get_property("Metadata").await.unwrap_or_default();
 
     // OwnedValue derefs to Value — match through it.
     let track_title = match metadata.get("xesam:title") {

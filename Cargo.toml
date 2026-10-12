@@ -34,6 +34,9 @@ rustix = { version = "1", features = ["fs", "process"] }
 inotify = "0.11"
 # --- D-Bus (notifications, tray, logind) ---
 zbus = "5"
+async-io = "2"
+async-channel = "2"
+futures-lite = "2"
 # --- internal ---
 lme-backend = { path = "crates/lme-backend" }
 lme-ui = { path = "crates/lme-ui" }

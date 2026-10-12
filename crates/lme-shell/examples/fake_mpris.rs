@@ -46,6 +46,9 @@ struct Mpris;
 impl Mpris {
     #[zbus(property)]
     fn identity(&self) -> &str {
+        if std::env::var_os("LME_FAKE_DEBUG").is_some() {
+            eprintln!("fake_mpris: Identity getter called");
+        }
         "LME Test Player"
     }
     #[zbus(property)]

@@ -301,6 +301,9 @@ pub fn spawn(tx: calloop::channel::Sender<DbusEvent>) -> Result<DbusHandle, Stri
         .map_err(|e| format!("name {IFACE}: {e}"))?
         .build()
         .map_err(|e| format!("connect: {e}"))?;
+    // D25: keep zbus's internal executor driver thread alive forever (a
+    // drained executor never restarts and later calls/replies hang).
+    crate::dbus_util::drive_executor_forever(&conn);
 
     // The connection must stay alive; the emitter thread owns it and exits
     // when the daemon drops the command sender (Shell.dbus_cmd), releasing
@@ -338,11 +341,16 @@ pub fn spawn(tx: calloop::channel::Sender<DbusEvent>) -> Result<DbusHandle, Stri
 /// Widget ids for toast interactions (u64 space; notif ids are u32 with
 /// D-Bus ids < 0x4000_0000 and local ids >= 0x4000_0000 — both encodings
 /// stay disjoint from each other and from the bar/panel id ranges).
+/// Ranges are registered in click_ids (the id registry).
 pub fn toast_dismiss_id(notif_id: u32) -> u64 {
-    0x7000_0000_0000 + notif_id as u64
+    crate::click_ids::TOAST_CARDS.base + notif_id as u64
 }
-pub fn toast_action_id(notif_id: u32, index: usize) -> u64 {
-    0x7400_0000_0000 + (notif_id as u64) * 16 + index as u64
+/// None when the id would overflow the registered toast-actions range
+/// (only possible for absurd D-Bus notif ids > ~2^36/16 — the caller then
+/// simply renders no action button for that notification).
+pub fn toast_action_id(notif_id: u32, index: usize) -> Option<u64> {
+    let id = crate::click_ids::TOAST_ACTIONS.base + (notif_id as u64) * 16 + index as u64;
+    crate::click_ids::TOAST_ACTIONS.contains(id).then_some(id)
 }
 
 /// One toast card: app name + dismiss, summary, body line, action buttons.
@@ -425,7 +433,12 @@ impl Widget for ToastCard {
         if !self.notif.actions.is_empty() {
             let mut x = self.rect.x + pad;
             for (index, (_, label)) in self.notif.actions.iter().enumerate().take(3) {
-                let mut b = Button::new(toast_action_id(self.notif.id, index), label.clone());
+                // ids that would overflow the registered range are skipped
+                // (absurd notif ids only — see click_ids::TOAST_ACTIONS)
+                let Some(wid) = toast_action_id(self.notif.id, index) else {
+                    continue;
+                };
+                let mut b = Button::new(wid, label.clone());
                 b.label_size = 12.0;
                 b.fill = t.surface.alpha(0.6);
                 b.hover_fill = Some(t.surface);
@@ -471,9 +484,10 @@ impl Widget for ToastCard {
                     for (index, (_, label)) in self.notif.actions.iter().enumerate().take(3) {
                         let w = (label.len() as f32 * 7.0 + 24.0).min(110.0);
                         if Rect::new(x, y, w, 28.0).contains(*p) {
-                            ctx.queue
-                                .push(UiEvent::Click(toast_action_id(self.notif.id, index)));
-                            ctx.request_repaint();
+                            if let Some(wid) = toast_action_id(self.notif.id, index) {
+                                ctx.queue.push(UiEvent::Click(wid));
+                                ctx.request_repaint();
+                            }
                             return true;
                         }
                         x += w + 8.0;
@@ -727,9 +741,10 @@ impl Shell {
     }
     /// Toast interaction clicks (routed from handle_click).
     pub fn handle_toast_click(&mut self, state: &mut UiState, id: u64) -> bool {
-        if id >= 0x7400_0000_0000 {
-            let notif_id = ((id - 0x7400_0000_0000) / 16) as u32;
-            let index = ((id - 0x7400_0000_0000) % 16) as usize;
+        let actions = crate::click_ids::TOAST_ACTIONS;
+        if actions.contains(id) {
+            let notif_id = actions.offset(id) as u32 / 16;
+            let index = (actions.offset(id) % 16) as usize;
             if let Some((key, _)) = self
                 .notifications
                 .live
@@ -743,11 +758,11 @@ impl Shell {
             }
             return true;
         }
-        // Bounded: the tray id space starts at 0x7100_0000_0000 (tray.rs
-        // ids) — the old open-ended `>= 0x7000…` swallowed every tray row
-        // click. Toast ids are 0x7000_0000_0000 + u32 (≤ 0x7000_FFFF_FFFF).
-        if (0x7000_0000_0000..0x7100_0000_0000).contains(&id) {
-            let notif_id = (id - 0x7000_0000_0000) as u32;
+        let cards = crate::click_ids::TOAST_CARDS;
+        // Registry-bounded (D23: the old open-ended `>= 0x7000…` swallowed
+        // every tray row click; the range check is owned by click_ids now).
+        if cards.contains(id) {
+            let notif_id = cards.offset(id) as u32;
             self.dismiss_notification(state, notif_id);
             return true;
         }
@@ -863,16 +878,19 @@ mod tests {
 
     #[test]
     fn toast_widget_ids_roundtrip() {
+        let cards = crate::click_ids::TOAST_CARDS;
+        let actions = crate::click_ids::TOAST_ACTIONS;
         for id in [1u32, 42, 999_999, 0x4000_0000] {
-            assert_eq!((toast_dismiss_id(id) - 0x7000_0000_0000) as u32, id);
+            assert_eq!(cards.offset(toast_dismiss_id(id)) as u32, id);
         }
-        let w = toast_action_id(7, 2);
-        assert_eq!((w - 0x7400_0000_0000) / 16, 7);
-        assert_eq!((w - 0x7400_0000_0000) % 16, 2);
-        // ranges never overlap, even for the largest possible ids
-        assert!(toast_dismiss_id(u32::MAX) < 0x7400_0000_0000);
-        assert!(toast_action_id(u32::MAX, 15) > toast_dismiss_id(u32::MAX));
-        // and they sit far above every bar/panel/workspace id range
-        assert!(toast_dismiss_id(0) > 0x3000_0000);
+        let w = toast_action_id(7, 2).unwrap();
+        assert_eq!(actions.offset(w) / 16, 7);
+        assert_eq!(actions.offset(w) % 16, 2);
+        // encoders never leave their registered ranges, even for u32::MAX
+        assert!(cards.contains(toast_dismiss_id(u32::MAX)));
+        assert!(toast_action_id(u32::MAX, 0).is_none());
+        assert!(toast_action_id(u32::MAX, 15).is_none());
+        // sanity: an ordinary notif id keeps its buttons
+        assert!(toast_action_id(0x0FFF_FFFF, 15).is_some());
     }
 }

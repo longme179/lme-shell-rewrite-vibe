@@ -1342,6 +1342,12 @@ fn mpris_wait_msg(harness: &Harness, tag: &str, timeout: Duration) -> bool {
         }
         if Instant::now() > deadline {
             eprintln!("--- msg media after timeout: {state}");
+            // the daemon's own log (mpris manager errors land on stderr)
+            if let Ok(log) = std::fs::read_to_string(harness.tmp.join("shell.log")) {
+                let mut tail: Vec<&str> = log.lines().rev().take(30).collect();
+                tail.reverse();
+                eprintln!("--- shell.log tail: {}", tail.join("\n"));
+            }
             return false;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -1386,10 +1392,33 @@ fn mpris_media_module() {
     .expect("spawn fake_mpris");
 
     // the shell tracks the player and picks its title for the bar pill
-    assert!(
-        mpris_wait_msg(&harness, "Native track", Duration::from_secs(15)),
-        "the media feed must track the fake player"
-    );
+    if !mpris_wait_msg(&harness, "Native track", Duration::from_secs(15)) {
+        eprintln!(
+            "--- mpris.log: {}",
+            std::fs::read_to_string(&mpris_log).unwrap_or_default()
+        );
+        if let Ok(mon) = std::fs::read_to_string(&bus.monitor_path) {
+            let hits: Vec<&str> = mon
+                .lines()
+                .filter(|l| l.contains("lmeTest") || l.contains("NameOwnerChanged"))
+                .collect();
+            eprintln!(
+                "--- monitor (lmeTest/NameOwnerChanged, {} hits): {}",
+                hits.len(),
+                hits.iter()
+                    .rev()
+                    .take(12)
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            let mut tail: Vec<&str> = mon.lines().rev().take(25).collect();
+            tail.reverse();
+            eprintln!("--- monitor tail:\n{}", tail.join("\n"));
+        }
+        panic!("the media feed must track the fake player");
+    }
     let state = harness.msg(&["media"]);
     assert!(
         state.contains("1 player") && state.contains("Test Artist") && state.contains("playing"),

@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use crate::bar;
+use crate::click_ids;
 use crate::ipc::{self, Command, Reply};
 use crate::launcher_data::{self, EmojiIndex};
 use crate::niri::NiriService;
@@ -378,8 +379,12 @@ impl Shell {
         if self.handle_toast_click(state, id) {
             return;
         }
-        // power menu buttons
+        // power menu buttons — bounded to the registered power range so a
+        // foreign id can never route into these arms (D23 protection)
         if self.power_menu == Some(window_id) {
+            if !click_ids::POWER_PANEL.contains(id) {
+                return;
+            }
             match id {
                 ids::POWER_LOCK => {
                     let _ = self.power.lock();
@@ -412,9 +417,12 @@ impl Shell {
             }
             return;
         }
-        // launcher activation (Enter)
-        if self.launcher == Some(window_id) && id == ids::LAUNCHER_LIST {
-            self.activate_launcher_selection(state);
+        // launcher activation (Enter) — bounded to the launcher range
+        // (D23 protection); only the list widget activates
+        if self.launcher == Some(window_id) && click_ids::LAUNCHER_PANEL.contains(id) {
+            if id == ids::LAUNCHER_LIST {
+                self.activate_launcher_selection(state);
+            }
             return;
         }
         // bar modules
@@ -449,20 +457,29 @@ impl Shell {
             bar::ids::TRAY => {
                 self.open_tray_panel(state);
             }
-            // tray panel widget ids (Tier 1.11) — the id space
-            // [0x7100_0000_0000, 0x7400_0000_0000) is reserved for the tray
-            // (toast ids live below 0x7100, toast action ids at 0x7400+)
-            id if (crate::tray::ids::TRAY_ROW_ACT..0x7400_0000_0000).contains(&id) => {
+            // tray panel widget ids (Tier 1.11) — registry-bounded ranges
+            // (click_ids; D23: open-ended checks are forbidden)
+            id if click_ids::TRAY_ROWS.contains(id) || click_ids::TRAY_MENU.contains(id) => {
                 self.handle_tray_click(state, id);
             }
-            id if id >= bar::ids::WORKSPACE_BASE => {
+            id if click_ids::WORKSPACE_BUTTONS.contains(id) => {
                 let ws_id = (id - bar::ids::WORKSPACE_BASE) as i64;
                 match self.niri.focus_workspace(ws_id) {
                     Ok(m) => self.show_osd(state, m, -1.0),
                     Err(e) => self.show_osd(state, e, -1.0),
                 }
             }
-            _ => {}
+            _ => {
+                // Registry diagnostic (D23 guard): an id that belongs to a
+                // registered range but reaches this arm is a routing bug —
+                // surface it so e2e logs catch the class D23 came from.
+                if let Some(r) = click_ids::find(id) {
+                    eprintln!(
+                        "lme-shell: click id {id:#x} in registered range {:?} but unhandled",
+                        r.name
+                    );
+                }
+            }
         }
     }
 
@@ -472,8 +489,11 @@ impl Shell {
     /// - audio pill: preview volume ±5% per notch, dry-run (no audio service
     ///   yet — the OSD is the only effect; README documents this)
     fn handle_wheel(&mut self, state: &mut UiState, window_id: u64, id: u64, dy: f32) {
-        // tray rows: forward the notch to the item's Scroll handler
-        if (crate::tray::ids::TRAY_ROW_WHEEL..0x7200_0000_0000).contains(&id) {
+        // tray rows: forward the notch to the item's Scroll handler (wheel
+        // events always carry the TRAY_ROW_WHEEL sub-block id; the sub-base
+        // ladder inside the registered TRAY_ROWS range is asserted by the
+        // click_ids unit test)
+        if click_ids::TRAY_ROWS.contains(id) && id >= crate::tray::ids::TRAY_ROW_WHEEL {
             self.handle_tray_wheel(id, dy);
             return;
         }
@@ -519,6 +539,9 @@ impl Shell {
                 self.volume_preview_at = Some(Instant::now());
                 self.show_osd(state, "Volume (dry-run)", self.volume_preview);
             }
+            // other bar pills have no wheel behavior — swallow (registry-
+            // bounded, so future bar modules can't fall into foreign arms)
+            id if click_ids::BAR_BUTTONS.contains(id) => {}
             _ => {}
         }
     }
@@ -1056,54 +1079,60 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
 
     // ---- notification D-Bus server (Tier 1.9) ----
     // Non-fatal when the session bus is absent (D4): the shell then runs
-    // with local notifications only (msg notify).
-    {
-        let (ntx, nchannel) = calloop::channel::channel::<crate::notifications::DbusEvent>();
-        match crate::notifications::spawn(ntx) {
-            Ok(_dbus) => {
-                crate::daemon::with_shell(&mut state, |shell, _| {
-                    shell.dbus_cmd = Some(_dbus.cmd_tx);
-                });
-                if let Err(e) = handle.insert_source(nchannel, |event, _, state| {
-                    if let calloop::channel::Event::Msg(ev) = event {
-                        crate::daemon::with_shell(state, |shell, state| {
-                            shell.notification_event(state, ev);
-                        });
+    // with local notifications only (msg notify). LME_SHELL_NO_NOTIF=1
+    // skips the module (D25 stall bisect knob).
+    if std::env::var_os("LME_SHELL_NO_NOTIF").is_none() {
+        {
+            let (ntx, nchannel) = calloop::channel::channel::<crate::notifications::DbusEvent>();
+            match crate::notifications::spawn(ntx) {
+                Ok(_dbus) => {
+                    crate::daemon::with_shell(&mut state, |shell, _| {
+                        shell.dbus_cmd = Some(_dbus.cmd_tx);
+                    });
+                    if let Err(e) = handle.insert_source(nchannel, |event, _, state| {
+                        if let calloop::channel::Event::Msg(ev) = event {
+                            crate::daemon::with_shell(state, |shell, state| {
+                                shell.notification_event(state, ev);
+                            });
+                        }
+                    }) {
+                        eprintln!("lme-shell: notification channel: {e:?}");
                     }
-                }) {
-                    eprintln!("lme-shell: notification channel: {e:?}");
+                }
+                Err(e) => {
+                    eprintln!("lme-shell: notifications: session bus unavailable ({e})");
                 }
             }
-            Err(e) => {
-                eprintln!("lme-shell: notifications: session bus unavailable ({e})");
-            }
         }
-    }
+    } // LME_SHELL_NO_NOTIF gate
 
     // ---- tray StatusNotifierWatcher (Tier 1.11) ----
     // Non-fatal without a session bus (D4): the bar hides the tray button.
-    {
-        let (ttx, tchannel) = calloop::channel::channel::<crate::tray::TrayEvent>();
-        match crate::tray::spawn(ttx) {
-            Ok(thandle) => {
-                crate::daemon::with_shell(&mut state, |shell, _| {
-                    shell.tray_handle = Some(thandle);
-                });
-                if let Err(e) = handle.insert_source(tchannel, |event, _, state| {
-                    if let calloop::channel::Event::Msg(ev) = event {
-                        crate::daemon::with_shell(state, |shell, state| {
-                            shell.tray_event(state, ev);
-                        });
+    // LME_SHELL_NO_TRAY=1 skips the module (D25 stall bisect knob).
+    if std::env::var_os("LME_SHELL_NO_TRAY").is_none() {
+        {
+            let (ttx, tchannel) = calloop::channel::channel::<crate::tray::TrayEvent>();
+            match crate::tray::spawn(ttx) {
+                Ok(thandle) => {
+                    crate::daemon::with_shell(&mut state, |shell, _| {
+                        shell.tray_handle = Some(thandle);
+                    });
+                    if let Err(e) = handle.insert_source(tchannel, |event, _, state| {
+                        if let calloop::channel::Event::Msg(ev) = event {
+                            crate::daemon::with_shell(state, |shell, state| {
+                                shell.tray_event(state, ev);
+                            });
+                        }
+                    }) {
+                        eprintln!("lme-shell: tray channel: {e:?}");
                     }
-                }) {
-                    eprintln!("lme-shell: tray channel: {e:?}");
+                }
+                Err(e) => {
+                    eprintln!("lme-shell: tray: session bus unavailable ({e})");
                 }
             }
-            Err(e) => {
-                eprintln!("lme-shell: tray: session bus unavailable ({e})");
-            }
         }
-    }
+    } // LME_SHELL_NO_TRAY gate
 
     // ---- MPRIS media feed (Tier 1.2) ----
     // Non-fatal without a session bus (D4): the media module stays hidden.

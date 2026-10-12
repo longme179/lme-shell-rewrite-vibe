@@ -221,3 +221,66 @@ share the alive flag). Caught by the MPRIS e2e's busctl-driven Next
 call; the tray e2e never caught it because register/unregister ride
 NameOwnerChanged. Lesson: per-interface proxies need per-interface
 subscriptions.
+
+## D25 — MPRIS e2e flake: zbus 5.19 wakeup loss in the full daemon; mpris rewritten single-threaded async + self-healing tick
+
+The MPRIS e2e (mpris_media_module) began flaking ~40–60% after unrelated
+binary-layout changes. Investigation ladder (all evidence preserved in the
+chat + examples/mpris_probe.rs):
+
+1. NOT the id-registry changes (git stash A/B passed/failed on the same
+   code — the flake was timing-dependent, not code-dependent).
+2. NOT a scan/subscribe race (subscribe-before-scan kept; real, but not
+   this bug).
+3. NOT the property cache (CacheProperties::No changed GetAll→Get on the
+   wire; stall identical).
+4. NOT zbus's internal executor driver exit (`drive_executor_forever`
+   tick-loop threads in dbus_util; stall identical).
+5. NOT the blocking-API thread shape (full rewrite of mpris.rs as ONE
+   thread with one `async_io::block_on` + a custom Feeds stream; stall
+   identical — and the identical standalone probe examples/mpris_probe.rs
+   passed 12/12, so the pattern itself is sound).
+6. dbus-monitor evidence (final-evidence runs): the daemon's mpris
+   connection stayed alive, the fake replied to the Get on the wire (and
+   served third-party busctl Gets in 0.01 s during the stall), but the
+   daemon's stream/pending-call dispatch never processed the reply —
+   i.e. a wakeup is lost inside the zbus→async-executor→async-io chain
+   in the context of the FULL daemon process (with wayland+calloop main
+   loop, inotify source, etc.). One run even showed the feed never seeing
+   NameOwnerChanged at all (signal delivery variant). Root cause inside
+   zbus 5.19/async-io not isolated further — likely an upstream wakeup
+   race; zbus's own docs test "a deadlock that used to happen" with
+   related combos.
+
+DECISION: make the mpris feed SELF-HEALING rather than fight the library:
+
+- mpris.rs is now a single-threaded async module (D25 shape): one thread,
+  one `async_io::block_on`, all sources (NameOwnerChanged stream,
+  per-player PropertiesChanged streams, shutdown channel, reconcile
+  timer) polled as one custom `Stream` (Feeds).
+- A reconcile TICK (1 s while no player is live, 5 s while one is —
+  listed in docs/PERF.md) does a full ListNames diff: missed
+  registrations, missed NameLost and wedged property reads all recover
+  on the next tick.
+- Every D-Bus round-trip inside the feed is raced against a 3 s timeout
+  (`with_timeout`) so a wedged call can never block the tick loop.
+- dbus_util::no_cache_proxy (CacheProperties::No) retained for tray +
+  mpris property reads: plain Get calls, no background cache tasks.
+- dbus_util::drive_executor_forever retained for the still-blocking
+  notifications/tray connections (zbus's own driver thread exits when
+  the executor drains; the docs say "failure to do so will result in
+  hangs" — belt and braces).
+- LME_SHELL_NO_NOTIF / LME_SHELL_NO_TRAY env gates (debug knobs) skip
+  the notification/tray modules for future bisects; LME_MPRIS_DEBUG
+  prints feed markers; examples/mpris_probe.rs is the standalone repro
+  (12/12 stable — the minimal pattern is fine, the daemon context is
+  the trigger).
+- e2e hardened: failure paths dump shell.log, mpris.log and the private
+  bus monitor log.
+
+Verification: mpris_media_module 12/12 standalone runs green; full
+workspace suite 134 tests green (fmt + clippy -D warnings clean).
+Residual risk: if the whole connection wedges (all dispatch dead, not
+just one call), ticks cannot recover it — would need a connection
+rebuild; not observed in any run. Real-machine validation stays on the
+checklist (sandbox-only observation either way).

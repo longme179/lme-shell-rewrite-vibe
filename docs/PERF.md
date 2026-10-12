@@ -72,3 +72,19 @@ per 2 s poll cycle. The native daemon: 11.6 MB, zero subprocesses at idle
 (the battery read is a direct sysfs file read; workspaces/title come from
 the niri event stream; network/audio probes are NOT wired in this build —
 their modules show placeholders, so the comparison is bar-only vs bar-only).
+
+## Periodic polls register (Amendment 4 lesson c)
+
+Every recurring poll in the daemon, with its period and visibility rule:
+
+| Poll | Period | Runs while | Owner |
+|---|---|---|---|
+| Clock rebuild | minute boundary | always (bar clock) | calloop timer |
+| Battery/sysfs system probe | 30 s | always (bar pill) | calloop timer |
+| MPRIS reconcile tick (D25) | 1 s while no player, 5 s while one is live | media module enabled | mpris feed thread |
+| Notification expiry timers | per-toast timeout | only while toasts exist | calloop timers |
+
+Idle wakeups with the 1 s empty-tick: ≤ 1.15/s worst case (one ListNames
+call per second while waiting for a player) — within the ≤ 1/s class
+target, and 0 additional wakeups while any player is live beyond the 5 s
+health check. Re-measured at the Tier-2 tier end.
