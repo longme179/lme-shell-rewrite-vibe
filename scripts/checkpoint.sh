@@ -38,6 +38,7 @@ fi
 if [ -n "$HITS" ]; then
   echo "ABORT: secret-like string in: $HITS" >&2; exit 3
 fi
+scripts/gh-sync.sh || echo "WARNING: gh-sync failed (exit $?); see STATE.md" >&2
 
 # 2. Committed work (mode-dependent), uncommitted diff, untracked files, docs.
 if [ "${CKPT_FULL:-0}" = 1 ]; then
