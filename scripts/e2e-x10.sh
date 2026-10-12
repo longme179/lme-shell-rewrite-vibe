@@ -13,6 +13,8 @@ cd "$(dirname "$0")/.."
 
 START="${1:-1}"
 END="${2:-10}"
+# the e2e harness spawns workspace binaries — build first (no-op when warm)
+cargo build --workspace --bins --examples --quiet || exit 1
 fails=0
 runs=0
 for i in $(seq "$START" "$END"); do

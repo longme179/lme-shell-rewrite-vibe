@@ -125,10 +125,16 @@ if done_marker replay-build; then
   echo "==> [replay-build] skipped (done)"
 else
   need_disk replay-build
-  echo "==> [replay-build] cargo test --release --locked --no-run (target: $REPLAY_TARGET)"
+  echo "==> [replay-build] build bins+examples + test --no-run (target: $REPLAY_TARGET)"
+  # cargo test --no-run alone does NOT produce the plain bin paths the e2e
+  # harness spawns (target/<profile>/mock-compositor) nor the examples
+  # (fake_sni/fake_mpris/fake_bluez) — build them explicitly first.
+  ( cd "$EXPORT_DIR" && CARGO_TARGET_DIR="$REPLAY_TARGET" CARGO_INCREMENTAL=0 \
+      cargo build --release --locked --workspace --bins --examples ) \
+    || fail "replay release build of bins/examples (re-run deliver.sh — cargo resumes from $REPLAY_TARGET)"
   ( cd "$EXPORT_DIR" && CARGO_TARGET_DIR="$REPLAY_TARGET" CARGO_INCREMENTAL=0 \
       cargo test --release --locked --no-run ) \
-    || fail "replay release build (re-run deliver.sh — cargo resumes from $REPLAY_TARGET)"
+    || fail "replay release test build (re-run deliver.sh — cargo resumes from $REPLAY_TARGET)"
   mark_done replay-build
 fi
 
