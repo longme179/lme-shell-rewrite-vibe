@@ -55,8 +55,12 @@ Everything else is the complete Rust workspace. Build: see README.md.
 EOF
 
 # ---------- 3. Replay (fresh target dir; frees nothing here — disk checked) ----------
+# LME_REPLAY_TARGET overrides the fresh dir: the sandbox kills long-running
+# foreground jobs, so a full cold replay is prewarmed in chunks ahead of
+# time (same from-scratch dep set, split across commands — see STATE.md
+# Environment). The export tree's own crates always build from the export.
 echo "==> replay build in export"
-REPLAY_TARGET="$(mktemp -d /tmp/lme-replay-target.XXXXXX)"
+REPLAY_TARGET="${LME_REPLAY_TARGET:-$(mktemp -d /tmp/lme-replay-target.XXXXXX)}"
 (
   cd "$T/lme-shell" || exit 1
   CARGO_TARGET_DIR="$REPLAY_TARGET" CARGO_INCREMENTAL=0 \
