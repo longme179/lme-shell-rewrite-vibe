@@ -314,3 +314,32 @@ Final design (crates/lme-ui/src/wayland.rs, render.rs, text.rs, shadow.rs):
   intentionally softer — a real compositor shows the sharp physical
   buffer; see KNOWN_ISSUES KI-2 for the real-niri validation that
   remains).
+
+## D27 — Tier 2.1 control center + the fake-state path bug it exposed
+
+The control center panel (ControlCenter.qml + ControlDashboard.qml port):
+one full-overlay window (scrim 0.13, legacy side-panel value) with a
+right-anchored 600px panel sliding in (SlidePanelRight, panels.rs), header
++ 3x2 tab grid + Controls tab (clock/Lock, four quick-toggle tiles,
+volume+brightness sliders card, power-profile row, media card, resources
+card). Other tabs render placeholders naming their NATIVE_PLAN row. Click
+ids live in the new click_ids::CONTROL_PANEL range [0x8000, 0x8100);
+routing is registry-bounded (D23 rule). Content rebuilds on the existing
+5 s system chain ONLY while open (PERF register; no new poll). Esc /
+outside-click / toggle close it; the bar audio and battery pills open it.
+
+Port deltas (recorded, deliberate):
+- Tiles are single-line ("Label — detail") — the native Button has no
+  two-line body yet; the tile styling pass lands with the settings tab.
+- No appearance combo / Edit-layout row (settings panel is Tier 3).
+- Mic slider hidden until a microphone feed exists (Tier 2.2).
+- Media transport buttons show a notice until 2.9 wires MPRIS control.
+
+**The bug 2.1 exposed (fixed)**: probe_system parsed
+LME_SHELL_FAKE_STATE_SYSTEM as inline JSON, but the e2e harness passes a
+PATH — from_str(path) failed silently forever, the fake system state never
+loaded, and goldens had absorbed the empty state (the wheel-OSD golden
+literally showed 5% while its comment said 69%). probe_system now reads
+the file at the path; bar/osd goldens regenerated showing the fake data
+(Wi-Fi / 64% / +77%). This is why the control center initially rendered
+"Unavailable" despite fake data — the VLM golden inspection caught it.

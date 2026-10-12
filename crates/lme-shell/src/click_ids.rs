@@ -61,6 +61,13 @@ pub const LAUNCHER_PANEL: IdRange = IdRange {
     base: 0x6000,
     end: 0x6100,
 };
+/// Control center panel (control_center::ids — tabs, tiles, sliders,
+/// media, profiles). Tier 2.1.
+pub const CONTROL_PANEL: IdRange = IdRange {
+    name: "control-panel",
+    base: 0x8000,
+    end: 0x8100,
+};
 /// Toast card dismiss buttons: base + notification u32 id
 /// (notifications::toast_dismiss_id).
 pub const TOAST_CARDS: IdRange = IdRange {
@@ -93,6 +100,7 @@ pub const ALL: &[IdRange] = &[
     BAR_BUTTONS,
     WORKSPACE_BUTTONS,
     POWER_PANEL,
+    CONTROL_PANEL,
     LAUNCHER_PANEL,
     TOAST_CARDS,
     TRAY_ROWS,

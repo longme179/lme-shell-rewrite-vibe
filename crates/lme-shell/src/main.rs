@@ -7,6 +7,7 @@
 
 mod bar;
 mod click_ids;
+mod control_center;
 mod daemon;
 mod ipc;
 mod launcher_data;

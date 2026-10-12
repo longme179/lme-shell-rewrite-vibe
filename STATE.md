@@ -62,11 +62,21 @@ docs/KNOWN_ISSUES.md (live issue list). This session:
    a KNOWN_ISSUES entry or a fix (KI-1 records the one ~1/13 flake
    observed mid-session, with ruled-outs and the EMFILE hypothesis).
 
-**Next: Tier 2 in the Amendment 4 order — control center shell + Controls
-tab first, then audio, brightness, NetworkManager, BlueZ; TIER-2A delivery
-after control center + audio + brightness + network + Bluetooth. Fake
-D-Bus service + private-bus e2e + golden per module (tray/MPRIS method);
-inspect goldens with the image-viewing skill before each delivery.**
+**Tier 2.1 control center DONE (D27)**: panel + Controls tab + tab grid +
+SlidePanelRight + CONTROL_PANEL id range + e2e (open/golden/close) + bar
+audio/battery pills open it. Exposed and fixed a LATENT BUG: probe_system
+read LME_SHELL_FAKE_STATE_SYSTEM as inline JSON while the harness passes a
+path — the fake system state never loaded and goldens had absorbed the
+empty state (wheel OSD golden showed 5%, comment said 69%). Now file-read;
+bar/osd/control goldens regenerated with real fake data. 152 passed + 4
+ignored. KI-3 records the missing Flickable (content overflow on short
+outputs).
+
+**Next: Tier 2.2 (audio/brightness actions — lme-backend probes exist),
+then 2.3 BlueZ, 2.4 NetworkManager -> TIER-2A delivery (zip + README +
+summary via webhook). Fake D-Bus service + private-bus e2e + golden per
+module (tray/MPRIS method); inspect goldens with the image-viewing skill
+before each delivery.**
 
 Previous session (Amendment 4: robustness + registry + D25):
 
@@ -176,7 +186,7 @@ register lives in docs/PERF.md; re-measure idle at every tier end.**
 ## Gate status (HEAD)
 
 `cargo fmt` ✓ · `cargo clippy --workspace --all-targets -D warnings` ✓ ·
-`cargo test --workspace`: **147 passed, 0 failed, 4 ignored** (lme-backend
+`cargo test --workspace`: **152 passed, 0 failed, 4 ignored** (lme-backend
 goldens ignored with upstream-drift reasons — docs/UPSTREAM_SYNC.md).
 Tier 0.9 + hygiene gate: e2e x10 green (scripts/e2e-x10.sh).
 

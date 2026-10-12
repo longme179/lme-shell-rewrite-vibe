@@ -74,7 +74,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 
 | # | Feature | Target module | Test | Status |
 |---|---|---|---|---|
-| 2.1 | Control center tabs | — | — | missing |
+| 2.1 | Control center tabs | control_center.rs | unit + e2e golden + VLM | done (Controls tab; others placeholder'd; overflow KI-3) |
 | 2.2 | Audio/brightness actions | — | — | missing (probes exist in lme-backend; no UI) |
 | 2.3 | Bluetooth (BlueZ) | — | — | missing (external tools for pairing) |
 | 2.4 | Wi-Fi (NetworkManager) | — | — | missing (external: nm-connection-editor) |

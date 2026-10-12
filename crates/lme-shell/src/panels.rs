@@ -121,6 +121,103 @@ impl Widget for CenteredPanel {
     }
 }
 
+/// A panel that slides in from the RIGHT edge (legacy SlideLoader
+/// direction "right": control center, and later wifi/settings panels).
+/// Same surface-coordinate contract as CenteredPanel (events arrive in
+/// window coordinates; the panel is laid out at an offset).
+pub struct SlidePanelRight {
+    panel: Box<dyn Widget>,
+    w: f32,
+    h: f32,
+    reveal_track: u64,
+    rect: Rect,
+}
+
+impl SlidePanelRight {
+    pub fn new(panel: Box<dyn Widget>, w: f32, h: f32, reveal_track: u64) -> Self {
+        Self {
+            panel,
+            w,
+            h,
+            reveal_track,
+            rect: Rect::default(),
+        }
+    }
+}
+
+impl Widget for SlidePanelRight {
+    fn measure(&mut self, _ctx: &mut Ctx) -> Size {
+        Size::new(self.w, self.h)
+    }
+    fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
+        self.rect = bounds;
+        // right-anchored with a 14 px margin (legacy panelLoader x)
+        let x = (bounds.x + bounds.w - self.w - 14.0).max(bounds.x);
+        let y = bounds.y + 10.0;
+        self.panel.layout(
+            ctx,
+            Rect::new(
+                x,
+                y,
+                self.w.min(bounds.w - 28.0),
+                self.h.min(bounds.h - 26.0),
+            ),
+        );
+    }
+    fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<lme_ui::draw::DrawCmd>) {
+        let reveal = ctx.anims.value(self.reveal_track).clamp(0.0, 1.0);
+        if reveal <= 0.0 {
+            return;
+        }
+        let dx = (1.0 - reveal) * 40.0;
+        let alpha = reveal;
+        let mut panel_cmds = Vec::new();
+        self.panel.paint(ctx, &mut panel_cmds);
+        for mut cmd in panel_cmds {
+            match &mut cmd {
+                lme_ui::draw::DrawCmd::RoundedRect { rect, fill, .. } => {
+                    rect.x += dx;
+                    if let Some(c) = fill {
+                        *c = c.alpha(c.a * alpha);
+                    }
+                }
+                lme_ui::draw::DrawCmd::Text { pos, .. } => {
+                    pos.x += dx;
+                }
+                lme_ui::draw::DrawCmd::Circle { cx, .. } => {
+                    *cx += dx;
+                }
+                lme_ui::draw::DrawCmd::Shadow { rect, .. } => {
+                    rect.x += dx;
+                }
+                lme_ui::draw::DrawCmd::Image { rect, .. } => {
+                    rect.x += dx;
+                }
+            }
+            out.push(cmd);
+        }
+    }
+    fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        if let InputEvent::Down { pos: p, .. } = ev {
+            if !self.panel.rect().contains(*p) {
+                // click on the scrim: close (legacy overlay MouseArea)
+                ctx.queue.push(UiEvent::Dismiss);
+                return true;
+            }
+        }
+        self.panel.deliver(ctx, ev, target)
+    }
+    fn rect(&self) -> Rect {
+        self.rect
+    }
+    fn focusables(&self, out: &mut Vec<u64>) {
+        self.panel.focusables(out);
+    }
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 pub mod ids {
     pub const POWER_LOCK: u64 = 0x5001;
     pub const POWER_SUSPEND: u64 = 0x5002;

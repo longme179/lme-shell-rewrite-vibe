@@ -72,6 +72,10 @@ pub struct Shell {
     pub bars: HashMap<String, u64>,
     pub launcher: Option<u64>,
     pub power_menu: Option<u64>,
+    /// Control center window id (Tier 2.1).
+    pub control: Option<u64>,
+    /// Selected control center tab (legacy ShellState.controlTab).
+    pub control_tab: usize,
     pub osd: Option<(u64, Instant)>,
     /// Dry-run volume preview shown by the audio-pill wheel (finding e);
     /// re-seeded from the system snapshot when the preview goes stale.
@@ -130,6 +134,8 @@ impl Shell {
             bars: HashMap::new(),
             launcher: None,
             power_menu: None,
+            control: None,
+            control_tab: 0,
             osd: None,
             volume_preview: 0.0,
             volume_preview_at: None,
@@ -164,9 +170,15 @@ fn repo_asset_path(relative: &str) -> std::path::PathBuf {
 fn probe_system(probes: &mut lme_backend::probes::SystemProbes) -> serde_json::Map<String, Value> {
     let mut snapshot = serde_json::Map::new();
     if std::env::var_os("LME_SHELL_FAKE_STATE").is_some() {
-        if let Ok(text) = std::env::var("LME_SHELL_FAKE_STATE_SYSTEM") {
-            if let Ok(Value::Object(system)) = serde_json::from_str::<Value>(&text) {
-                return system;
+        // The harness passes a PATH to a json file (it used to be passed as
+        // inline json — the from_str(env) silently failed forever and the
+        // goldens absorbed the empty state; found via the Tier 2.1 control
+        // center showing "Unavailable" despite fake data).
+        if let Some(path) = std::env::var_os("LME_SHELL_FAKE_STATE_SYSTEM") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(Value::Object(system)) = serde_json::from_str::<Value>(&text) {
+                    return system;
+                }
             }
         }
         return snapshot;
@@ -211,6 +223,21 @@ fn probe_system(probes: &mut lme_backend::probes::SystemProbes) -> serde_json::M
 }
 
 /// Clock label: "ddd, MMM d  ·  HH:mm" (compact "HH:mm") — BarModule.qml.
+/// "Day, Mon d" for the control center clock row (Controls tab header).
+pub fn clock_date_label() -> String {
+    let now = chrono_like_now();
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!(
+        "{}, {} {}",
+        DAYS[now.0 as usize],
+        now.2,
+        MONTHS[(now.1 - 1) as usize],
+    )
+}
+
 pub fn clock_label(compact: bool) -> String {
     let now = chrono_like_now();
     if compact {
@@ -298,6 +325,9 @@ impl AppHandler for Shell {
         if self.power_menu == Some(window_id) {
             self.power_menu = None;
         }
+        if self.control == Some(window_id) {
+            self.control = None;
+        }
         if let Some((osd_id, _)) = self.osd {
             if osd_id == window_id {
                 self.osd = None;
@@ -325,6 +355,15 @@ impl AppHandler for Shell {
                     self.refresh_launcher(state);
                 }
             }
+            UiEvent::Slide(crate::control_center::ids::VOL_SLIDER, value) => {
+                // dry-run preview, same as the bar pill wheel (actions 2.2)
+                self.volume_preview = value.clamp(0.0, 100.0);
+                self.volume_preview_at = Some(Instant::now());
+                self.show_osd(state, format!("Volume {}%", value.round() as i64), value);
+            }
+            UiEvent::Slide(crate::control_center::ids::BRIGHT_SLIDER, _) => {
+                self.show_osd(state, "Brightness control lands with Tier 2.2", -1.0);
+            }
             UiEvent::Submit(_, _) | UiEvent::Slide(_, _) | UiEvent::Toggle(_, _) => {}
             UiEvent::Focus(_) => {}
         }
@@ -336,6 +375,7 @@ impl AppHandler for Shell {
             if self.launcher == Some(window_id)
                 || self.power_menu == Some(window_id)
                 || self.tray_panel == Some(window_id)
+                || self.control == Some(window_id)
             {
                 self.close_panels(state);
             }
@@ -424,6 +464,14 @@ impl Shell {
             if id == ids::LAUNCHER_LIST {
                 self.activate_launcher_selection(state);
             }
+            return;
+        }
+        // control center widgets — bounded to the registered range (D23)
+        if self.control == Some(window_id) {
+            if !click_ids::CONTROL_PANEL.contains(id) {
+                return;
+            }
+            self.handle_control_click(state, id);
             return;
         }
         // bar modules
@@ -656,6 +704,69 @@ impl Shell {
         Ok(String::new())
     }
 
+    /// Tier 2.1 control center clicks (ids pre-validated against the
+    /// CONTROL_PANEL range by handle_click).
+    fn handle_control_click(&mut self, state: &mut UiState, id: u64) {
+        use crate::control_center::ids as cc;
+        match id {
+            cc::CLOSE => self.close_panels(state),
+            cc::LOCK => {
+                let _ = self.power.lock();
+                self.close_panels(state);
+            }
+            cc::TILE_DND => {
+                // legacy: dnd tile toggles forever (-1) / off (0)
+                let next = if crate::notifications::dnd_active(&self.settings.values) {
+                    0
+                } else {
+                    -1
+                };
+                if let Err(e) = self.settings.set("dndUntil", Value::from(next)) {
+                    eprintln!("lme-shell: control: dnd: {e}");
+                }
+                self.refresh_control_center(state);
+            }
+            cc::TILE_MOTION => {
+                let next = !self
+                    .settings
+                    .values
+                    .get("animations")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                if let Err(e) = self.settings.set("animations", Value::from(next)) {
+                    eprintln!("lme-shell: control: animations: {e}");
+                }
+                self.refresh_theme();
+                self.rebuild_bars(state);
+                self.refresh_control_center(state);
+            }
+            cc::TILE_WIFI => self.show_osd(state, "Wi-Fi settings land with Tier 2.4", -1.0),
+            cc::TILE_BLUETOOTH => {
+                self.show_osd(state, "Bluetooth controls land with Tier 2.3", -1.0)
+            }
+            cc::VOL_MUTE | cc::BRIGHT_SLIDER => self.show_osd(
+                state,
+                "Audio, brightness and power-profile actions land with Tier 2.2/2.5",
+                -1.0,
+            ),
+            id if (cc::PROFILE_BASE..cc::PROFILE_BASE + 3).contains(&id) => self.show_osd(
+                state,
+                "Audio, brightness and power-profile actions land with Tier 2.2/2.5",
+                -1.0,
+            ),
+            cc::MEDIA_PREV | cc::MEDIA_PLAY | cc::MEDIA_NEXT => self.show_osd(
+                state,
+                "Media transport controls land with the activity island (Tier 2.9)",
+                -1.0,
+            ),
+            id if (cc::TAB_BASE..cc::TAB_BASE + 6).contains(&id) => {
+                self.control_tab = (id - cc::TAB_BASE) as usize;
+                self.refresh_control_center(state);
+            }
+            _ => {}
+        }
+    }
+
     // ---- panel management (legacy ShellState.togglePanel) ----
 
     pub fn toggle_panel(&mut self, state: &mut UiState, panel: &str) {
@@ -676,8 +787,17 @@ impl Shell {
                     self.open_power_menu(state);
                 }
             }
-            "notifications" | "control" | "clipboard" | "overview" | "activity" | "wifi"
-            | "settings" => {
+            "control" => {
+                // Tier 2.1: the control center panel (bar audio/battery
+                // pills route here too).
+                if self.control.is_some() {
+                    self.close_panels(state);
+                } else {
+                    self.close_panels(state);
+                    self.open_control_center(state);
+                }
+            }
+            "notifications" | "clipboard" | "overview" | "activity" | "wifi" | "settings" => {
                 self.show_osd(
                     state,
                     format!("The {panel} panel is not implemented in this build"),
@@ -743,6 +863,54 @@ impl Shell {
         self.start_reveal(state, id);
     }
 
+    fn open_control_center(&mut self, state: &mut UiState) {
+        let output = state.focused_output();
+        let (out_w, out_h) = output
+            .as_ref()
+            .map(|o| (o.logical.0, o.logical.1))
+            .unwrap_or((1920, 1080));
+        // legacy loader: width min(600, out-32), height min(900, out-42)
+        let w = crate::control_center::PANEL_W
+            .min(out_w as f32 - 32.0)
+            .max(320.0);
+        let h = 900.0_f32.min(out_h as f32 - 42.0).max(360.0);
+        let mut spec = WindowSpec::full_overlay("lme-control", KeyboardInteractivity::Exclusive);
+        spec.output = output.as_ref().map(|o| o.output.clone());
+        // legacy scrim for side panels (0.13, vs 0.40 for centered ones)
+        spec.background = lme_ui::Color::rgba(0.0, 0.0, 0.0, 0.13);
+        let id = state.create_window(spec);
+        let data = crate::control_center::control_data(self);
+        let panel =
+            crate::control_center::ControlCenterPanel::new(&self.theme, &data, self.control_tab);
+        let track = REVEAL_TRACK + id;
+        state.set_root(
+            id,
+            Box::new(panels::SlidePanelRight::new(Box::new(panel), w, h, track)),
+        );
+        self.control = Some(id);
+        self.start_reveal(state, id);
+    }
+
+    /// Rebuild the open control center from a fresh snapshot (called from
+    /// the 5 s system chain and after settings changes — only while open,
+    /// so no idle cost).
+    pub fn refresh_control_center(&mut self, state: &mut UiState) {
+        let Some(id) = self.control else { return };
+        let data = crate::control_center::control_data(self);
+        let tab = self.control_tab;
+        let panel = crate::control_center::ControlCenterPanel::new(&self.theme, &data, tab);
+        let w = crate::control_center::PANEL_W;
+        if let Some(win) = state.window(id) {
+            let h = win.size.1 as f32 - 10.0;
+            let track = REVEAL_TRACK + id;
+            state.set_root(
+                id,
+                Box::new(panels::SlidePanelRight::new(Box::new(panel), w, h, track)),
+            );
+            state.request_render(id);
+        }
+    }
+
     pub(crate) fn start_reveal(&mut self, state: &mut UiState, window_id: u64) {
         let track = REVEAL_TRACK + window_id;
         let dur = self.theme.slide_duration_ms;
@@ -765,6 +933,9 @@ impl Shell {
             state.close_window(id);
         }
         if let Some(id) = self.power_menu.take() {
+            state.close_window(id);
+        }
+        if let Some(id) = self.control.take() {
             state.close_window(id);
         }
         if self.tray_panel.is_some() {
@@ -865,6 +1036,7 @@ impl Shell {
                 let panels_open: Vec<&str> = [
                     ("launcher", self.launcher.is_some()),
                     ("power", self.power_menu.is_some()),
+                    ("control", self.control.is_some()),
                 ]
                 .into_iter()
                 .filter(|(_, open)| *open)
@@ -1281,6 +1453,11 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
             crate::daemon::with_shell(state, |shell, state| {
                 shell.system_snapshot = probe_system(&mut shell.system_probes);
                 shell.rebuild_bars(state);
+                // Tier 2.1: refresh the control center while it is OPEN
+                // (no new poll — rides the existing chain; PERF register).
+                if shell.control.is_some() {
+                    shell.refresh_control_center(state);
+                }
             });
             // re-arm: chained one-shot, so an idle shell wakes once per 5 s
             let timer = calloop::timer::Timer::from_duration(Duration::from_secs(5));
@@ -1289,6 +1466,9 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
                     crate::daemon::with_shell(state, |shell, state| {
                         shell.system_snapshot = probe_system(&mut shell.system_probes);
                         shell.rebuild_bars(state);
+                        if shell.control.is_some() {
+                            shell.refresh_control_center(state);
+                        }
                     });
                     calloop::timer::TimeoutAction::Drop
                 });

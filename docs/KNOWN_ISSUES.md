@@ -47,3 +47,18 @@ Every entry: symptom, repro, ruled out, not tested, workaround/status.
 - **Workaround/next step**: keep on the real-machine validation checklist
   (niri at 1.25, compare against docs/screens/bar.png). Do NOT re-enable
   any speculative path without that test. D26 in docs/DECISIONS.md.
+
+## KI-3: control center content can overflow short outputs (no Flickable yet)
+
+- **Symptom**: with every optional section present (media card + power
+  profile + brightness), the Controls tab is taller than the panel height
+  on outputs < ~900 px; overflowing sections are clipped (the panel paints
+  with a clip rect) instead of scrolling.
+- **Repro**: open the control center with a live MPRIS player on an
+  800 px-tall output.
+- **Legacy**: ControlDashboard.qml wraps the grid in a Flickable.
+- **Ruled out**: nothing — this is a straight missing feature, not a bug
+  hunt.
+- **Workaround/status**: clipped painting (no bleed over the scrim); the
+  Flickable port (wheel-scroll offset on the content region) is queued
+  with the Tier 2.7 Agenda tab, which needs scrolling natively.

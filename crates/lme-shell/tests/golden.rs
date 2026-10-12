@@ -1044,7 +1044,7 @@ fn golden_wheel_over_audio_pill() {
 /// Clicking the audio pill answers with the control-center notice (finding a:
 /// status modules are real buttons; panels arrive in Tier 2).
 #[test]
-fn click_audio_pill_shows_control_notice() {
+fn click_audio_pill_opens_control_center() {
     let png = capture_png("osd-notice", 0);
     let _ = std::fs::remove_file(&png);
     let spec = format!("motion:{}@1200;click@1300", at(BAR_AUDIO_PILL));
@@ -1060,22 +1060,16 @@ fn click_audio_pill_shows_control_notice() {
         None,
         None,
     );
+    // Tier 2.1: the audio pill now opens the control center panel
     assert!(
-        harness.wait_log("created (lme-osd)", Duration::from_secs(10)),
-        "audio pill click must show the control notice"
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "audio pill click must open the control center"
     );
+    let status = harness.msg(&["status"]);
     assert!(
-        harness.wait_log("CAPTURED", Duration::from_secs(15)),
-        "timed capture never happened"
+        status.contains("control"),
+        "status must report the control panel open after the pill click: {status}"
     );
-    let image = decode_png(&png);
-    assert!(
-        (image.width, image.height) == (460, 76),
-        "topmost surface must be the notice OSD, got {}x{}",
-        image.width,
-        image.height
-    );
-    assert_matches_golden(&png, "osd-control-notice.png");
 }
 
 // ---------------------------------------------------------------------------
@@ -1492,6 +1486,52 @@ fn fractional_scale_golden() {
         meta.len()
     );
     assert_matches_golden(&png, "bar-fractional-125.png");
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.1: control center — the bar audio pill opens it, the Controls tab
+// golden-matches, and IPC toggle closes it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_center_opens_and_matches_golden() {
+    let png = capture_png("control-center", 0);
+    let _ = std::fs::remove_file(&png);
+    let harness = spawn_harness("control", "1280x800", Some(3), Some(&png), None, false);
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    let status = harness.msg(&["status"]);
+    assert!(
+        status.contains("control"),
+        "status must report the control panel open: {status}"
+    );
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "capture never happened"
+    );
+    let image = decode_png(&png);
+    // full-overlay surface (scrim + right-anchored panel inside), like the
+    // launcher/power goldens
+    assert_eq!(
+        (image.width, image.height),
+        (1280, 800),
+        "control panel surface size"
+    );
+    let meta = std::fs::metadata(&png).expect("capture file");
+    assert!(meta.len() <= 200 * 1024, "golden candidate too large");
+    assert_matches_golden(&png, "control-center.png");
+    // toggle again closes
+    harness.msg(&["toggle", "control"]);
+    std::thread::sleep(Duration::from_millis(300));
+    let status = harness.msg(&["status"]);
+    assert!(
+        !status.contains("control"),
+        "control center must close on toggle: {status}"
+    );
 }
 
 // ---------------------------------------------------------------------------
