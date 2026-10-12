@@ -16,3 +16,5 @@ wayland-protocols-wlr = { version = "0.3", features = ["server"] }
 png = "0.18"
 # tempfile: anonymous file for the wl_keyboard keymap fd, pure Rust
 tempfile = "3"
+# wp_viewporter + wp_fractional_scale_manager_v1 (Tier 0.9)
+wayland-protocols = { version = "0.32", features = ["staging", "server"] }

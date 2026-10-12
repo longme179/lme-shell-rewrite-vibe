@@ -9,6 +9,8 @@ publish = false
 [dependencies]
 smithay-client-toolkit.workspace = true
 wayland-client.workspace = true
+# wp_viewporter + wp_fractional_scale_v1 (Tier 0.9; staging protocols)
+wayland-protocols.workspace = true
 calloop.workspace = true
 calloop-wayland-source.workspace = true
 tiny-skia.workspace = true

@@ -21,18 +21,34 @@ type SliceKey = (u32, u32, (u8, u8, u8, u8));
 /// Cache: keyed by (radius ×4, extent, color rgba8).
 pub struct ShadowCache {
     slices: HashMap<SliceKey, Arc<ShadowSlice>>,
+    /// Render scale (Tier 0.9): slices are rendered at physical radius /
+    /// patch; the 9-slice stretch rect is scaled by the renderer.
+    render_scale: f32,
 }
 
 impl ShadowCache {
     pub fn new() -> Self {
         Self {
             slices: HashMap::new(),
+            render_scale: 1.0,
         }
     }
 
+    /// Set the render scale for subsequent `get`s (Tier 0.9).
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.render_scale = if scale.is_finite() && scale >= 0.5 && scale <= 10.0 {
+            scale
+        } else {
+            1.0
+        };
+    }
+
     /// Get or render the 9-slice for a shadow whose source shape is a
-    /// rounded square of side `2*patch` with corner `radius`.
+    /// rounded square of side `2*patch` with corner `radius` (LOGICAL px;
+    /// rendered at physical radius × patch so slices stay sharp).
     pub fn get(&mut self, radius: f32, patch: u32, color: Color) -> Arc<ShadowSlice> {
+        let radius = radius * self.render_scale;
+        let patch = (patch as f32 * self.render_scale).round().max(1.0) as u32;
         let key = ((radius * 4.0).round() as u32, patch, color.to_rgba8());
         if let Some(hit) = self.slices.get(&key) {
             return Arc::clone(hit);

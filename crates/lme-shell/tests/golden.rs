@@ -282,6 +282,13 @@ fn spawn_harness_full(
         cmd.arg("--pointer-events").arg(pointer);
     }
     cmd.env("XDG_RUNTIME_DIR", tmp.join("runtime"));
+    // Tier 0.9: fractional scale (wp_fractional_scale_v1 preferred_scale).
+    if let Some(scale) = std::env::var("LME_E2E_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    {
+        cmd.arg("--scale").arg(scale.to_string());
+    }
     // The mock compositor logs (slog) to STDOUT — pipe and tee it.
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     let mut compositor = cmd.spawn().expect("spawn mock-compositor");
@@ -1324,6 +1331,67 @@ fn tray_sni_lifecycle() {
         harness.wait_log("destroyed (lme-tray)", Duration::from_secs(10)),
         "panel must close when the last item goes away"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tier 0.9: fractional scale (wp_fractional_scale_v1 + wp_viewporter)
+// ---------------------------------------------------------------------------
+
+/// The bar renders at scale 1.25 through the viewport path: buffer =
+/// ceil(logical x scale), destination = logical, text shaped at physical
+/// px. The golden is the box-downscaled logical capture (the mock applies
+/// the viewport in its capture path).
+#[test]
+fn fractional_scale_golden() {
+    let png = capture_png("bar-fractional-125", 0);
+    let _ = std::fs::remove_file(&png);
+    // SAFETY-of-isolation: the env var is process-global; this test is the
+    // only user and spawns its harness immediately (tests run on their own
+    // threads — cargo runs them in parallel, so use a lock-style guard).
+    struct ScaleEnv;
+    impl ScaleEnv {
+        fn set(scale: &str) -> Self {
+            std::env::set_var("LME_E2E_SCALE", scale);
+            ScaleEnv
+        }
+    }
+    impl Drop for ScaleEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("LME_E2E_SCALE");
+        }
+    }
+    let _guard = ScaleEnv::set("1.25");
+    let harness = spawn_harness_full(
+        "bar-frac125",
+        "1280x800",
+        Some((Capture::Commit(3), &png)),
+        None,
+        None,
+        false,
+        None,
+        &[],
+        None,
+    );
+    drop(_guard);
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "fractional-scale capture never happened"
+    );
+    // Tier 0.9 evidence: the bar committed a ceil(logical x 1.25) buffer
+    // with viewport destination = logical (42px bar height -> 53px buffer).
+    assert!(
+        harness.wait_log("buffer=1600x53 dst=1280x42", Duration::from_secs(5)),
+        "viewport commit line never appeared"
+    );
+    let image = decode_png(&png);
+    assert_eq!((image.width, image.height), (1280, 42), "logical capture size");
+    let meta = std::fs::metadata(&png).expect("capture file");
+    assert!(
+        meta.len() <= 200 * 1024,
+        "golden candidate too large: {} bytes",
+        meta.len()
+    );
+    assert_matches_golden(&png, "bar-fractional-125.png");
 }
 
 // ---------------------------------------------------------------------------

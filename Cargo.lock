@@ -805,6 +805,7 @@ dependencies = [
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]
@@ -874,6 +875,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "tempfile",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-server",
 ]

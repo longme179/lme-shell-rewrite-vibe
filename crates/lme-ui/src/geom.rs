@@ -11,6 +11,13 @@ impl Point {
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
+    /// Scale by a render factor (Tier 0.9).
+    pub fn scaled(self, s: f32) -> Self {
+        Self {
+            x: self.x * s,
+            y: self.y * s,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -40,6 +47,15 @@ pub struct Rect {
 impl Rect {
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self { x, y, w, h }
+    }
+    /// Scale by a render factor (Tier 0.9).
+    pub fn scaled(self, s: f32) -> Self {
+        Self {
+            x: self.x * s,
+            y: self.y * s,
+            w: self.w * s,
+            h: self.h * s,
+        }
     }
     pub fn from_size(size: Size) -> Self {
         Self {

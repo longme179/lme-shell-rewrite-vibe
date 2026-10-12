@@ -19,8 +19,11 @@ pub trait RenderBackend {
     fn resize(&mut self, width: u32, height: u32);
     fn width(&self) -> u32;
     fn height(&self) -> u32;
-    /// Paint everything from scratch (full redraw, ADR 0001).
-    fn render(&mut self, cmds: &[DrawCmd], fonts: &mut FontBook, background: Color);
+    /// Paint everything from scratch (full redraw, ADR 0001). `scale` is
+    /// the fractional render scale (Tier 0.9): commands are LOGICAL px,
+    /// the pixmap is physical (logical × scale); text glyphs are already
+    /// physical (shaped at scale — see FontBook::set_render_scale).
+    fn render(&mut self, cmds: &[DrawCmd], fonts: &mut FontBook, background: Color, scale: f32);
     /// The finished frame: BGRA, premultiplied, row stride = width*4 —
     /// exactly what wl_shm Argb8888 expects on little-endian.
     fn bgra(&self) -> &[u8];
@@ -64,7 +67,12 @@ impl RenderBackend for CpuRenderer {
         self.pixmap.height()
     }
 
-    fn render(&mut self, cmds: &[DrawCmd], fonts: &mut FontBook, background: Color) {
+    fn render(&mut self, cmds: &[DrawCmd], fonts: &mut FontBook, background: Color, scale: f32) {
+        let s = if scale.is_finite() && scale >= 0.5 && scale <= 10.0 {
+            scale
+        } else {
+            1.0
+        };
         let bg = background.to_rgba8();
         self.pixmap
             .fill(tiny_skia::Color::from_rgba8(bg.0, bg.1, bg.2, bg.3));
@@ -77,10 +85,12 @@ impl RenderBackend for CpuRenderer {
                     border,
                     clip,
                 } => {
-                    let path = rounded_rect_path(rect.x, rect.y, rect.w, rect.h, *radius);
-                    self.fill_path(&path, fill, *clip);
+                    let rect = rect.scaled(s);
+                    let path = rounded_rect_path(rect.x, rect.y, rect.w, rect.h, radius * s);
+                    let clip = clip.map(|c| c.scaled(s));
+                    self.fill_path(&path, fill, clip);
                     if let Some((c, w)) = border {
-                        self.stroke_path(&path, *c, *w, *clip);
+                        self.stroke_path(&path, *c, *w * s, clip);
                     }
                 }
                 DrawCmd::Circle {
@@ -90,8 +100,8 @@ impl RenderBackend for CpuRenderer {
                     fill,
                     clip,
                 } => {
-                    let path = crate::geom::circle_path(*cx, *cy, *r);
-                    self.fill_path(&path, &Some(*fill), *clip);
+                    let path = crate::geom::circle_path(*cx * s, *cy * s, *r * s);
+                    self.fill_path(&path, &Some(*fill), clip.map(|c| c.scaled(s)));
                 }
                 DrawCmd::Text {
                     pos,
@@ -99,10 +109,16 @@ impl RenderBackend for CpuRenderer {
                     color,
                     clip,
                 } => {
-                    self.blit_text(pos, line, *color, fonts, *clip);
+                    self.blit_text(
+                        &pos.scaled(s),
+                        line,
+                        *color,
+                        fonts,
+                        clip.map(|c| c.scaled(s)),
+                    );
                 }
                 DrawCmd::Shadow { rect, slice, clip } => {
-                    self.blit_shadow(rect, slice, *clip);
+                    self.blit_shadow(&rect.scaled(s), slice, clip.map(|c| c.scaled(s)));
                 }
                 DrawCmd::Image {
                     rect,
@@ -110,7 +126,12 @@ impl RenderBackend for CpuRenderer {
                     image,
                     clip,
                 } => {
-                    self.blit_pixmap(rect, *radius, image, *clip);
+                    self.blit_pixmap(
+                        &rect.scaled(s),
+                        *radius * s,
+                        image,
+                        clip.map(|c| c.scaled(s)),
+                    );
                 }
             }
         }
@@ -475,7 +496,7 @@ mod tests {
             clip: None,
         }];
         let mut fonts = FontBook::new_for_tests();
-        r.render(&cmds, &mut fonts, Color::rgb(0.0, 0.0, 0.0));
+        r.render(&cmds, &mut fonts, Color::rgb(0.0, 0.0, 0.0), 1.0);
         assert_eq!(r.bgra().len(), 64 * 64 * 4);
         // center pixel should be red (BGRA in memory: B,G,R,A)
         let idx = (32 * 64 + 32) * 4;
@@ -492,5 +513,92 @@ mod tests {
         assert_eq!(r.width(), 32);
         r.resize(48, 24);
         assert_eq!((r.width(), r.height()), (48, 24));
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::draw::DrawCmd;
+    use crate::geom::{Point, Rect};
+
+    fn px_at(r: &CpuRenderer, x: u32, y: u32) -> (u8, u8, u8, u8) {
+        let i = ((y * r.pixmap.width() + x) * 4) as usize;
+        let d = r.bgra();
+        (d[i + 2], d[i + 1], d[i], d[i + 3]) // BGRA -> RGBA
+    }
+
+    #[test]
+    fn rect_scales_with_render_scale() {
+        // logical 128x32 surface at scale 1.25 -> 160x40 pixmap
+        let mut r = CpuRenderer::new(160, 40);
+        let cmd = DrawCmd::RoundedRect {
+            rect: Rect::new(10.0, 10.0, 100.0, 20.0),
+            radius: 0.0,
+            fill: Some(Color::rgb(1.0, 1.0, 1.0)),
+            border: None,
+            clip: None,
+        };
+        r.render(&[cmd], &mut FontBook::new_for_tests(), Color::rgba(0.0, 0.0, 0.0, 0.0), 1.25);
+        // center of the rect: logical (60,20) -> physical (75,25)
+        assert_eq!(px_at(&r, 75, 25).3, 255, "rect center filled at 1.25x");
+        // logical x=111 (outside the 10..110 rect) -> physical 139: empty
+        assert_eq!(px_at(&r, 139, 25).3, 0, "right of rect empty");
+        // logical x=111 at scale 1.0 would be 111 — the scaled surface is wider
+        assert!(r.pixmap.width() == 160);
+    }
+
+    #[test]
+    fn text_metrics_stay_logical_across_scales() {
+        let mut f1 = FontBook::new_for_tests();
+        let mut f2 = FontBook::new_for_tests();
+        let w1 = f1.line("Shell", 13.0, 400).width;
+        f2.set_render_scale(1.25);
+        let w2 = f2.line("Shell", 13.0, 400).width;
+        assert!(
+            (w1 - w2).abs() < 1.5,
+            "logical width must not change with scale: {w1} vs {w2}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod premul_tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::draw::DrawCmd;
+    use crate::geom::Rect;
+    use crate::text::FontBook;
+
+    #[test]
+    fn premultiplied_invariant_holds_at_fractional_scale() {
+        let mut r = CpuRenderer::new(1600, 53);
+        let cmds = vec![
+            DrawCmd::RoundedRect {
+                rect: Rect::new(0.0, 0.0, 1280.0, 42.0),
+                radius: 0.0,
+                fill: Some(Color::rgba(0.22, 0.20, 0.28, 0.9)),
+                border: None,
+                clip: None,
+            },
+            DrawCmd::RoundedRect {
+                rect: Rect::new(1000.0, 8.0, 260.0, 26.0),
+                radius: 13.0,
+                fill: Some(Color::rgba(0.58, 0.50, 1.0, 0.9)),
+                border: None,
+                clip: None,
+            },
+        ];
+        r.render(&cmds, &mut FontBook::new_for_tests(), Color::rgba(0.0, 0.0, 0.0, 0.0), 1.25);
+        let d = r.bgra();
+        for i in (0..d.len()).step_by(4) {
+            let (b, g, rr, a) = (d[i], d[i + 1], d[i + 2], d[i + 3]);
+            assert!(
+                rr <= a && g <= a && b <= a,
+                "premultiplication violated at px {}: rgb=({rr},{g},{b}) a={a}",
+                i / 4
+            );
+        }
     }
 }

@@ -42,6 +42,10 @@ use std::io::{Seek as _, Write as _};
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::time::{Duration, Instant};
 
+use wayland_protocols::wp::fractional_scale::v1::server::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
+use wayland_protocols::wp::viewporter::server::{wp_viewporter, wp_viewport};
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 // the generated types live inside the snake_case modules:
 use std::sync::Arc;
@@ -55,6 +59,7 @@ use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, Resource, WEnum,
 };
 use zwlr_layer_shell_v1::ZwlrLayerShellV1 as LayerShellIface;
+use wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1 as WpFractionalScaleManagerV1;
 use zwlr_layer_surface_v1::ZwlrLayerSurfaceV1 as LayerSurfaceIface;
 
 const KEYMAP: &str = include_str!("../assets/minimal-keymap.xkb");
@@ -94,6 +99,8 @@ struct BufferRec {
 struct SurfaceRec {
     layer: Option<ObjectId>,
     pending_buffer: Option<ObjectId>,
+    /// wp_viewport destination in logical px (None = no viewport).
+    viewport_dst: Option<(i32, i32)>,
     current_buffer: Option<ObjectId>,
     frame_callbacks: Vec<wl_callback::WlCallback>,
     configured: bool,
@@ -194,6 +201,9 @@ struct State {
     /// unfired frame callback (over-run; the previous frame never displayed).
     dropped_frames: u64,
     commits_total: u64,
+    /// Fractional scale advertised via wp_fractional_scale_v1 (×120 wire
+    /// units); 1.0 = the protocol is inert (buffer == logical size).
+    fractional_scale: f64,
     map_seq_next: u64,
     output_w: i32,
     output_h: i32,
@@ -392,12 +402,13 @@ impl State {
 
     fn capture_topmost(&self, path: &str) -> Option<String> {
         let id = self.topmost_layer_surface()?;
-        let buf = self
+        let (buf, dst) = self
             .surfaces
             .get(&id)
-            .and_then(|r| r.current_buffer.clone())
-            .and_then(|b| self.buffers.get(&b).cloned())?;
-        self.capture_to(&buf, path)
+            .map(|r| (r.current_buffer.clone(), r.viewport_dst))
+            .unwrap_or((None, None));
+        let buf = buf.and_then(|b| self.buffers.get(&b).cloned())?;
+        self.capture_to_scaled(&buf, path, dst)
     }
 
     /// Update pointer focus from pointer_pos; enter/leave as needed, then
@@ -600,24 +611,55 @@ impl State {
         }
     }
 
-    fn capture(&self, buf: &BufferRec) -> Option<String> {
+    fn capture(&self, buf: &BufferRec, surf: &ObjectId) -> Option<String> {
         let path = self.capture_path.clone()?;
-        self.capture_to(buf, &path)
+        let dst = self.surfaces.get(surf).and_then(|r| r.viewport_dst);
+        self.capture_to_scaled(buf, &path, dst)
     }
 
     /// Encode a buffer's current contents to a PNG at `path`.
     fn capture_to(&self, buf: &BufferRec, path: &str) -> Option<String> {
+        self.capture_to_scaled(buf, path, None)
+    }
+
+    /// Capture with an optional wp_viewport destination (logical px):
+    /// the buffer is downscaled to the destination with a deterministic
+    /// box filter so goldens compare at logical size at any scale.
+    fn capture_to_scaled(
+        &self,
+        buf: &BufferRec,
+        path: &str,
+        viewport_dst: Option<(i32, i32)>,
+    ) -> Option<String> {
         use std::os::unix::fs::FileExt;
         let pool = self.pools.get(&buf.pool)?;
         let len = buf.h.checked_mul(buf.stride)? as usize;
         let mut raw = vec![0u8; len];
         pool.fd.read_exact_at(&mut raw, buf.offset as u64).ok()?;
         let rgba = bgra_rows_to_rgba(&raw, buf.w, buf.h, buf.stride);
+        // DEBUG (D26/Tier 0.9): raw dump next to the capture
+        if std::env::var_os("LME_MOCK_RAW_DUMP").is_some() {
+            let rp = format!("{path}.raw.png");
+            if let Ok(f) = fs::File::create(&rp) {
+                let mut e = png::Encoder::new(f, buf.w as u32, buf.h as u32);
+                e.set_color(png::ColorType::Rgba);
+                e.set_depth(png::BitDepth::Eight);
+                if let Ok(mut w) = e.write_header() {
+                    let _ = w.write_image_data(&rgba);
+                }
+            }
+        }
+        let (out, w, h) = match viewport_dst {
+            Some((dw, dh)) if dw > 0 && dh > 0 && (dw != buf.w || dh != buf.h) => {
+                (downscale_box(&rgba, buf.w, buf.h, dw, dh), dw, dh)
+            }
+            _ => (rgba, buf.w, buf.h),
+        };
         let file = fs::File::create(path).ok()?;
-        let mut enc = png::Encoder::new(file, buf.w as u32, buf.h as u32);
+        let mut enc = png::Encoder::new(file, w as u32, h as u32);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
-        enc.write_header().ok()?.write_image_data(&rgba).ok()?;
+        enc.write_header().ok()?.write_image_data(&out).ok()?;
         Some(path.to_string())
     }
 
@@ -644,6 +686,38 @@ impl State {
         // after the last key (+ release) allow a grace period, then end the run
         self.keys_done_at = Some(Instant::now() + Duration::from_millis(t + 45 + 3_000));
     }
+}
+
+/// Deterministic box-filter downscale of a tight RGBA buffer to (dw, dh)
+/// (for wp_viewport destination captures; unit-tested below).
+fn downscale_box(rgba: &[u8], w: i32, h: i32, dw: i32, dh: i32) -> Vec<u8> {
+    let (w, h, dw, dh) = (w as usize, h as usize, dw as usize, dh as usize);
+    let mut out = vec![0u8; dw * dh * 4];
+    for dy in 0..dh {
+        let y0 = dy * h / dh;
+        let y1 = ((dy + 1) * h / dh).max(y0 + 1);
+        for dx in 0..dw {
+            let x0 = dx * w / dw;
+            let x1 = ((dx + 1) * w / dw).max(x0 + 1);
+            let (mut r, mut g, mut b, mut a, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4;
+                    r += rgba[i] as u32;
+                    g += rgba[i + 1] as u32;
+                    b += rgba[i + 2] as u32;
+                    a += rgba[i + 3] as u32;
+                    n += 1;
+                }
+            }
+            let o = (dy * dw + dx) * 4;
+            out[o] = (r / n) as u8;
+            out[o + 1] = (g / n) as u8;
+            out[o + 2] = (b / n) as u8;
+            out[o + 3] = (a / n) as u8;
+        }
+    }
+    out
 }
 
 /// Convert wl_shm Argb8888 (BGRA byte order on LE) rows into tight RGBA.
@@ -698,6 +772,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for State {
                 SurfaceRec {
                     layer: None,
                     pending_buffer: None,
+                    viewport_dst: None,
                     current_buffer: None,
                     frame_callbacks: Vec::new(),
                     configured: false,
@@ -745,6 +820,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                 let configured = rec.configured;
                 let mapped = rec.mapped;
                 let buffer_id = rec.pending_buffer.clone();
+                let viewport_dst = rec.viewport_dst;
 
                 if !configured {
                     if let Some(lid) = &layer_id {
@@ -842,6 +918,14 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                     }
                 }
 
+                // Tier 0.9 evidence: committed buffer + viewport state
+                if let (Some(buf), Some(dst)) = (&buf_rec, viewport_dst) {
+                    state.slog(
+                        "VIEWPORT",
+                        &format!("buffer={}x{} dst={}x{}", buf.w, buf.h, dst.0, dst.1),
+                    );
+                }
+
                 // release the buffer back to the client
                 if let Some(bid) = &buffer_id {
                     if let Ok(buf) = wl_buffer::WlBuffer::from_id(dh, bid.clone()) {
@@ -852,7 +936,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                 // capture?
                 if let (Some(n), Some(_)) = (state.capture_commit, &buf_rec) {
                     if commit_no == n {
-                        let path = state.capture(buf_rec.as_ref().expect("capture buf"));
+                        let path = state.capture(buf_rec.as_ref().expect("capture buf"), &resource.id());
                         if let Some(p) = path {
                             state.slog("CAPTURED", &p);
                         } else {
@@ -1321,6 +1405,124 @@ impl Dispatch<wl_callback::WlCallback, ()> for State {
     }
 }
 
+// ---- wp_viewporter + wp_fractional_scale_manager_v1 (Tier 0.9) ----
+
+impl GlobalDispatch<wp_viewporter::WpViewporter, ()> for State {
+    fn bind(
+        _state: &mut State,
+        _dh: &DisplayHandle,
+        _client: &Client,
+        resource: wayland_server::New<wp_viewporter::WpViewporter>,
+        _data: &(),
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+impl Dispatch<wp_viewporter::WpViewporter, ()> for State {
+    fn request(
+        _state: &mut State,
+        _client: &Client,
+        _resource: &wp_viewporter::WpViewporter,
+        request: wp_viewporter::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, State>,
+    ) {
+        // GetViewport { id, surface } — the viewport remembers its surface
+        // so set_destination can be recorded per-surface; Destroy is inert.
+        if let wp_viewporter::Request::GetViewport { id, surface } = request {
+            let data = surface.id().clone();
+            _data_init.init(id, data);
+        }
+    }
+}
+
+impl Dispatch<wp_viewport::WpViewport, ObjectId> for State {
+    fn request(
+        state: &mut State,
+        _client: &Client,
+        resource: &wp_viewport::WpViewport,
+        request: wp_viewport::Request,
+        surface_id: &ObjectId,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, State>,
+    ) {
+        match request {
+            wp_viewport::Request::SetDestination { width, height } => {
+                if width <= 0 || height <= 0 {
+                    // protocol: non-positive destination is BadDestination
+                    resource.post_error(
+                        wp_viewport::Error::BadValue,
+                        "viewport destination must be > 0",
+                    );
+                    return;
+                }
+                if let Some(rec) = state.surfaces.get_mut(surface_id) {
+                    rec.viewport_dst = Some((width, height));
+                }
+            }
+            // The shell only uses source = whole-buffer + destination; the
+            // other requests are accepted and ignored (mock scope).
+            wp_viewport::Request::SetSource { .. } | wp_viewport::Request::Destroy => {}
+            _ => {}
+        }
+    }
+}
+
+impl GlobalDispatch<WpFractionalScaleManagerV1, ()> for State {
+    fn bind(
+        _state: &mut State,
+        _dh: &DisplayHandle,
+        _client: &Client,
+        resource: wayland_server::New<WpFractionalScaleManagerV1>,
+        _data: &(),
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for State {
+    fn request(
+        state: &mut State,
+        _client: &Client,
+        _resource: &WpFractionalScaleManagerV1,
+        request: wp_fractional_scale_manager_v1::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        // GetFractionalScale { surface, id }: create the object and
+        // immediately push the preferred scale (×120 wire units).
+        if let wp_fractional_scale_manager_v1::Request::GetFractionalScale {
+            surface,
+            id,
+        } = request
+        {
+            let fs = data_init.init(id, surface.id().clone());
+            let wire = (state.fractional_scale * 120.0).round() as u32;
+            fs.preferred_scale(wire);
+        }
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ObjectId> for State {
+    fn request(
+        _state: &mut State,
+        _client: &Client,
+        _resource: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        request: wp_fractional_scale_v1::Request,
+        _data: &ObjectId,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, State>,
+    ) {
+        // Destroy is the only request.
+        let _ = request;
+    }
+}
+
 // ---- wl_output / wl_keyboard: no client requests handled ----
 
 impl Dispatch<wl_output::WlOutput, ()> for State {
@@ -1355,7 +1557,8 @@ fn usage() {
          \x20 [--capture-commit N | --capture-at MS] [--capture-out PATH] [--socket NAME]\n\
          \x20 [--output WxH] [--key-events name@ms,...]\n\
          \x20 [--pointer-events motion:x,y@ms;click[:l|m|r]@ms;press/release[:l|m|r]@ms;\
-scroll:h,v@ms;scrollpx:h,v@ms;scrollstop@ms;leave@ms]"
+scroll:h,v@ms;scrollpx:h,v@ms;scrollstop@ms;leave@ms]\n\
+         \x20 [--scale F] (fractional scale via wp_fractional_scale_v1)"
     );
 }
 
@@ -1457,6 +1660,7 @@ fn main() {
     let mut socket_name = "lme-mock-0".to_string();
     let mut output = (1920i32, 1080i32);
 
+    let mut fractional_scale = 1.0f64;
     let mut key_events: Vec<(u64, u32)> = Vec::new();
     let mut pointer_events: Vec<(u64, PtrEv)> = Vec::new();
     let mut capture_at_ms: Option<u64> = None;
@@ -1510,6 +1714,18 @@ fn main() {
                     }
                 }
             }
+            "--scale" => {
+                // Tier 0.9: fractional scale advertised through
+                // wp_fractional_scale_manager_v1 preferred_scale (×120).
+                fractional_scale = args
+                    .next()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(1.0);
+                if !(0.5..=10.0).contains(&fractional_scale) {
+                    eprintln!("--scale must be within 0.5..=10");
+                    std::process::exit(2);
+                }
+            }
             _ => {
                 usage();
                 std::process::exit(2);
@@ -1533,6 +1749,8 @@ fn main() {
     // seat v8: axis_value120 requires a wl_pointer of version >= 8
     dh.create_global::<State, wl_seat::WlSeat, ()>(8, ());
     dh.create_global::<State, LayerShellIface, ()>(5, ());
+    dh.create_global::<State, wp_viewporter::WpViewporter, ()>(1, ());
+    dh.create_global::<State, WpFractionalScaleManagerV1, ()>(1, ());
 
     // Scripted input: key events become press+release pairs 45 ms apart;
     // pointer events run verbatim; both end the run after a grace period.
@@ -1616,6 +1834,7 @@ fn main() {
         late_frames: 0,
         dropped_frames: 0,
         commits_total: 0,
+        fractional_scale,
         map_seq_next: 0,
         output_w: output.0,
         output_h: output.1,
@@ -1759,5 +1978,33 @@ mod pointer_spec_tests {
         assert!(parse_pointer_spec("teleport:1,2@10").is_err()); // unknown verb
         assert!(parse_pointer_spec("scroll:5@10").is_err()); // wants h,v
         assert!(parse_pointer_spec("motion:abc,2@10").is_err()); // bad coords
+    }
+}
+
+#[cfg(test)]
+mod frac_tests {
+    use super::*;
+
+    #[test]
+    fn downscale_box_maps_coordinates() {
+        // 1600x53 source (scale 1.25 of 1280x42 logical): white square at
+        // physical (12..138, 12..38) = logical (10..110, 10..30).
+        let (w, h) = (1600i32, 53i32);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 12..38 {
+            for x in 12..138 {
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i] = 255;
+                rgba[i + 1] = 255;
+                rgba[i + 2] = 255;
+                rgba[i + 3] = 255;
+            }
+        }
+        let out = downscale_box(&rgba, w, h, 1280, 42);
+        let at = |x: i32, y: i32| out[((y * 1280 + x) * 4) as usize + 3];
+        assert_eq!(at(64, 20), 255, "center (logical 51,16) white");
+        assert_eq!(at(10, 10), 255, "inside near corner (logical 8,8) white");
+        assert_eq!(at(120, 20), 0, "logical x=96 outside the square: empty");
+        assert_eq!(at(64, 36), 0, "logical y=29 outside 10..30: empty");
     }
 }

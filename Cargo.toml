@@ -35,6 +35,7 @@ inotify = "0.11"
 # --- D-Bus (notifications, tray, logind) ---
 zbus = "5"
 async-io = "2"
+wayland-protocols = "0.32"
 async-channel = "2"
 futures-lite = "2"
 # --- internal ---

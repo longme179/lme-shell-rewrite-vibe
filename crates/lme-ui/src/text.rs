@@ -15,6 +15,11 @@ pub struct FontBook {
     fs: cosmic_text::FontSystem,
     cache: cosmic_text::SwashCache,
     lines: HashMap<LineKey, Arc<ShapedText>>,
+    /// Render scale (Tier 0.9): text is SHAPED at physical px (size × scale
+    /// — the cache key scales with it, so caches are keyed by scale) while
+    /// the stored metrics stay LOGICAL (widgets never see the scale).
+    /// Glyph positions stay physical for the renderer.
+    render_scale: f32,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
@@ -29,10 +34,13 @@ struct LineKey {
 /// A shaped, positioned run of glyphs plus metrics. Immutable once built.
 pub struct ShapedText {
     pub glyphs: Vec<PlacedGlyph>,
+    /// LOGICAL px (physical ÷ scale at shape time).
     pub width: f32,
     pub ascent: f32,
     pub descent: f32,
     pub line_height: f32,
+    /// The scale this line was shaped at (glyphs are physical px).
+    pub scale: f32,
     /// The possibly-truncated text actually rendered.
     pub text: String,
 }
@@ -48,6 +56,18 @@ impl ShapedText {
     pub fn height(&self) -> f32 {
         self.line_height
     }
+
+    /// Convert PHYSICAL shaping metrics to LOGICAL (glyphs stay physical).
+    /// Called once after shaping at `scale`.
+    fn to_logical(&mut self, scale: f32) {
+        if scale > 0.0 && scale != 1.0 {
+            self.width /= scale;
+            self.ascent /= scale;
+            self.descent /= scale;
+            self.line_height /= scale;
+        }
+        self.scale = scale;
+    }
 }
 
 impl FontBook {
@@ -61,7 +81,19 @@ impl FontBook {
             fs,
             cache: cosmic_text::SwashCache::new(),
             lines: HashMap::new(),
+            render_scale: 1.0,
         }
+    }
+
+    /// Set the render scale for subsequent `line*` calls (Tier 0.9).
+    /// Must be called before layout/paint of a frame; the shaped-line
+    /// cache keys on the physical size, so lines re-shape on scale change.
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.render_scale = if scale.is_finite() && scale >= 0.5 && scale <= 10.0 {
+            scale
+        } else {
+            1.0
+        };
     }
 
     pub fn new_for_tests() -> Self {
@@ -99,10 +131,10 @@ impl FontBook {
     ) -> Arc<ShapedText> {
         let key = LineKey {
             text: text.to_string(),
-            size: (size * 4.0).round() as u32,
+            size: (size * self.render_scale * 4.0).round() as u32,
             weight,
             max_w: if max_width.is_finite() {
-                (max_width * 4.0).round() as u32
+                (max_width * self.render_scale * 4.0).round() as u32
             } else {
                 u32::MAX
             },
@@ -126,6 +158,7 @@ impl FontBook {
         } else {
             key.max_w as f32 / 4.0
         };
+        let scale = self.render_scale;
         if key.truncate {
             // Shrink with an ellipsis until it fits (shape is cached, so the
             // probe loop only runs on text change).
@@ -145,6 +178,7 @@ impl FontBook {
                     } else {
                         result.text = candidate;
                     }
+                    result.to_logical(scale);
                     return result;
                 }
                 len = len.saturating_sub((len / 8).max(1));
@@ -152,6 +186,7 @@ impl FontBook {
         }
         let mut result = self.shape_raw(&key.text, size, key.weight, max_w);
         result.text = key.text.clone();
+        result.to_logical(scale);
         result
     }
 
@@ -193,6 +228,7 @@ impl FontBook {
             ascent,
             descent,
             line_height,
+            scale: 1.0,
             text: String::new(),
         }
     }
