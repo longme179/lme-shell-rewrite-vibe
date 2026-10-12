@@ -14,6 +14,7 @@ mod notifications;
 mod panels;
 mod power;
 mod settings;
+mod tray;
 
 pub use power::spawn_detached;
 

@@ -784,6 +784,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "tiny-skia",
  "wayland-client",
  "zbus",
 ]

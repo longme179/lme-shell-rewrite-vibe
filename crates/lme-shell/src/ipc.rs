@@ -43,6 +43,8 @@ pub enum Command {
     },
     /// notifications — live + history + unread (center payload / testing).
     Notifications,
+    /// tray — registered StatusNotifierItems (Tier 1.11, testing/inspection).
+    Tray,
     /// status <message> — status toast (like QML lastResult messages).
     StatusMessage {
         message: String,

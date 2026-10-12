@@ -444,7 +444,9 @@ impl Widget for ToastCard {
     fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, _target: Option<u64>) -> bool {
         // The × area and the action buttons are the interactive zones.
         match ev {
-            InputEvent::Move(p) | InputEvent::Down { pos: p, .. } | InputEvent::Up { pos: p, .. } => {
+            InputEvent::Move(p)
+            | InputEvent::Down { pos: p, .. }
+            | InputEvent::Up { pos: p, .. } => {
                 let close_rect = Rect::new(
                     self.rect.x + self.rect.w - 46.0,
                     self.rect.y + 6.0,

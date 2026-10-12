@@ -24,6 +24,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Animator track for a panel reveal animation (window id offset).
 pub const REVEAL_TRACK: u64 = 0x900_000;
 
+/// Reveal tween track for a window (panels share this helper).
+pub fn reveal_track(window_id: u64) -> u64 {
+    REVEAL_TRACK + window_id
+}
+
 pub struct Shell {
     pub theme: Theme,
     pub settings: SettingsService,
@@ -37,6 +42,12 @@ pub struct Shell {
     pub system_snapshot: serde_json::Map<String, Value>,
     pub media_title: Option<String>,
     pub tray_items: usize,
+    /// Tray registry (Tier 1.11) + the open panel window, its menu page
+    /// state and the D-Bus manager handle (None without a session bus).
+    pub tray: crate::tray::TrayHub,
+    pub tray_handle: Option<crate::tray::TrayHandle>,
+    pub tray_panel: Option<u64>,
+    pub tray_menu_open: Option<String>,
     pub power: Box<dyn PowerExecutor>,
     /// Notification hub (Tier 1.9): live toasts + history + unread.
     pub notifications: crate::notifications::NotificationHub,
@@ -82,6 +93,10 @@ impl Shell {
             system_snapshot,
             media_title: None,
             tray_items: 0,
+            tray: crate::tray::TrayHub::default(),
+            tray_handle: None,
+            tray_panel: None,
+            tray_menu_open: None,
             power: {
                 let executor: Box<dyn PowerExecutor> = if dry_run {
                     Box::new(DryRunPower::default())
@@ -273,8 +288,11 @@ impl AppHandler for Shell {
             UiEvent::Click(id) => self.handle_click(state, window_id, id),
             UiEvent::Wheel(id, dy) => self.handle_wheel(state, window_id, id, dy),
             UiEvent::Dismiss => {
-                // outside-click on a panel's backdrop (CenteredPanel)
-                if self.launcher == Some(window_id) || self.power_menu == Some(window_id) {
+                // outside-click on a panel's backdrop (CenteredPanel/TrayPopup)
+                if self.launcher == Some(window_id)
+                    || self.power_menu == Some(window_id)
+                    || self.tray_panel == Some(window_id)
+                {
                     self.close_panels(state);
                 }
             }
@@ -293,7 +311,10 @@ impl AppHandler for Shell {
     fn key(&mut self, state: &mut UiState, window_id: u64, key: &KeyInput) {
         if key.sym == XKB_ESCAPE {
             // Esc closes any open panel (QML closePanels).
-            if self.launcher == Some(window_id) || self.power_menu == Some(window_id) {
+            if self.launcher == Some(window_id)
+                || self.power_menu == Some(window_id)
+                || self.tray_panel == Some(window_id)
+            {
                 self.close_panels(state);
             }
         }
@@ -406,7 +427,13 @@ impl Shell {
                 self.toggle_panel(state, "wifi");
             }
             bar::ids::TRAY => {
-                self.show_osd(state, "Tray menu is not implemented in this build", -1.0);
+                self.open_tray_panel(state);
+            }
+            // tray panel widget ids (Tier 1.11) — the id space
+            // [0x7100_0000_0000, 0x7400_0000_0000) is reserved for the tray
+            // (toast ids live below 0x7100, toast action ids at 0x7400+)
+            id if (crate::tray::ids::TRAY_ROW_ACT..0x7400_0000_0000).contains(&id) => {
+                self.handle_tray_click(state, id);
             }
             id if id >= bar::ids::WORKSPACE_BASE => {
                 let ws_id = (id - bar::ids::WORKSPACE_BASE) as i64;
@@ -425,6 +452,11 @@ impl Shell {
     /// - audio pill: preview volume ±5% per notch, dry-run (no audio service
     ///   yet — the OSD is the only effect; README documents this)
     fn handle_wheel(&mut self, state: &mut UiState, window_id: u64, id: u64, dy: f32) {
+        // tray rows: forward the notch to the item's Scroll handler
+        if (crate::tray::ids::TRAY_ROW_WHEEL..0x7200_0000_0000).contains(&id) {
+            self.handle_tray_wheel(id, dy);
+            return;
+        }
         match id {
             bar::ids::WORKSPACES => {
                 self.ws_wheel_acc += dy;
@@ -600,13 +632,18 @@ impl Shell {
                     self.open_power_menu(state);
                 }
             }
-            "notifications" | "control" | "clipboard" | "overview" | "activity" | "tray"
-            | "wifi" | "settings" => {
+            "notifications" | "control" | "clipboard" | "overview" | "activity" | "wifi"
+            | "settings" => {
                 self.show_osd(
                     state,
                     format!("The {panel} panel is not implemented in this build"),
                     -1.0,
                 );
+            }
+            "tray" => {
+                // Tier 1.11 tray panel (empty → still opens with the
+                // "No tray applications" row, like legacy)
+                self.open_tray_panel(state);
             }
             _ => {}
         }
@@ -662,7 +699,7 @@ impl Shell {
         self.start_reveal(state, id);
     }
 
-    fn start_reveal(&mut self, state: &mut UiState, window_id: u64) {
+    pub(crate) fn start_reveal(&mut self, state: &mut UiState, window_id: u64) {
         let track = REVEAL_TRACK + window_id;
         let dur = self.theme.slide_duration_ms;
         let c = self.theme.spatial_curve;
@@ -685,6 +722,9 @@ impl Shell {
         }
         if let Some(id) = self.power_menu.take() {
             state.close_window(id);
+        }
+        if self.tray_panel.is_some() {
+            self.close_tray_panel(state);
         }
     }
 
@@ -860,6 +900,11 @@ impl Shell {
                 ),
                 detail: Some(crate::notifications::history_json(&self.notifications)),
             },
+            Command::Tray => Reply {
+                ok: true,
+                message: format!("{} tray items", self.tray.items.len()),
+                detail: Some(self.tray.json()),
+            },
             Command::StatusMessage { message } => {
                 self.show_osd(state, message, -1.0);
                 Reply::ok("status shown")
@@ -991,6 +1036,31 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
             }
             Err(e) => {
                 eprintln!("lme-shell: notifications: session bus unavailable ({e})");
+            }
+        }
+    }
+
+    // ---- tray StatusNotifierWatcher (Tier 1.11) ----
+    // Non-fatal without a session bus (D4): the bar hides the tray button.
+    {
+        let (ttx, tchannel) = calloop::channel::channel::<crate::tray::TrayEvent>();
+        match crate::tray::spawn(ttx) {
+            Ok(thandle) => {
+                crate::daemon::with_shell(&mut state, |shell, _| {
+                    shell.tray_handle = Some(thandle);
+                });
+                if let Err(e) = handle.insert_source(tchannel, |event, _, state| {
+                    if let calloop::channel::Event::Msg(ev) = event {
+                        crate::daemon::with_shell(state, |shell, state| {
+                            shell.tray_event(state, ev);
+                        });
+                    }
+                }) {
+                    eprintln!("lme-shell: tray channel: {e:?}");
+                }
+            }
+            Err(e) => {
+                eprintln!("lme-shell: tray: session bus unavailable ({e})");
             }
         }
     }
