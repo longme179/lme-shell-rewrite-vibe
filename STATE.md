@@ -177,6 +177,18 @@ made (mock pacing insufficient) — flagged real-machine.
 - Bench: `scripts/bench-native.sh` (uses the RELEASE binaries).
 
 ## Delivery record
+**TIER-1-COMPLETE delivered 2026-10-12 (commit 1df00cc):** zip (1.0 MB,
+1 part) + README + coverage summary sent via webhook after full replay
+verification (release + debug + 137 tests green in the export tree,
+secret scan clean). Completes Tier 1 (1.1–1.14): adds tray (1.11),
+MPRIS media + resources feeds (1.2) over the TIER-1B set, with the D23
+toast-id-range / fetch_menu parse / D24 receive_all_signals fixes the
+new e2e suites exposed. Sandbox note: the deliver.sh single invocation
+exceeds one 10-min command budget when the replay target is cold-ish —
+completed manually mirroring the script steps exactly (gates cached,
+export recreated, replay resumed, scan, zip, send); replay-target disk
+accounting lesson recorded (release dir removable after its phase).
+
 
 - Label TIER-1, commit 6169ddc, 2026-10-11. Zip 1 part (well under the 7 MB
   split threshold). NATIVE_PLAN counts at delivery: done=34 partial=1
