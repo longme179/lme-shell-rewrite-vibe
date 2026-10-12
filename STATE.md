@@ -249,6 +249,19 @@ made (mock pacing insufficient) — flagged real-machine.
 - Bench: `scripts/bench-native.sh` (uses the RELEASE binaries).
 
 ## Delivery record
+**TIER-2A delivered 2026-10-12 (commit 9456913 + the deliver-script fix):**
+zip (1 part) + README + summary sent via webhook after full replay
+verification (release + 157 tests green in the export, secret scan clean;
+e2e x10 tier gate 10/10 green before shipping). Adds over TIER-1-COMPLETE:
+Tier 0.9 fractional scale (D26, lazy viewport, 1.0 byte-identical),
+Amendment-5 hygiene (failed-theory removal, EMFILE survival with the 5 s
+mtime poll, process-group/leak fixes incl. 82 dbus-daemons, KNOWN_ISSUES
+register, e2e x10 discipline), Tier 2.1 control center (D27 + the
+fake-state path bug it exposed), 2.2 audio/brightness actions, 2.3 BlueZ
+tile (fake system-bus e2e), 2.4 Wi-Fi radio toggle. Delivery-pipeline fix
+found by the replay: `--examples` is target-SELECTING — a cold replay
+target built NO workspace bins; the stage now builds --bins --examples.
+
 **TIER-1-COMPLETE delivered 2026-10-12 (commit 1df00cc):** zip (1.0 MB,
 1 part) + README + coverage summary sent via webhook after full replay
 verification (release + debug + 137 tests green in the export tree,
