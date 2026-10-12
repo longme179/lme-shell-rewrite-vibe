@@ -1141,3 +1141,169 @@ fn local_notification_ipc() {
         "local notification must expire"
     );
 }
+
+// ---------------------------------------------------------------------------
+// System tray e2e (Tier 1.11): a real StatusNotifierItem (examples/
+// fake_sni) registers on the private bus; the bar grows a tray button,
+// the panel lists it, clicks Activate, right-click opens the DBusMenu
+// page, menu entries Event, wheel Scrolls, and the item's death removes
+// it (NameOwnerChanged path).
+// ---------------------------------------------------------------------------
+
+/// Bar tray button (single right module bar_right=["tray"], 1280 wide,
+/// bar_side_margin 12, button 30×30 ending at the right edge − 6 − 4).
+const BAR_TRAY_BUTTON: (f64, f64) = (1243.0, 29.0);
+/// Tray panel row 0 center (panel 268 wide at right−14, panel top margin
+/// 58, list area starts +36, rows 34 high).
+const TRAY_ROW0: (f64, f64) = (1132.0, 111.0);
+/// Menu page entry 0 center (list area +36, entries 30 high).
+const TRAY_MENU_ENTRY0: (f64, f64) = (1132.0, 109.0);
+
+fn sni_wait_log(path: &Path, tag: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if std::fs::read_to_string(path)
+            .map(|t| t.contains(tag))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+#[test]
+fn tray_sni_lifecycle() {
+    let png = capture_png("tray-panel", 0);
+    let _ = std::fs::remove_file(&png);
+    // the bus must exist before the daemon (it owns the watcher name at boot)
+    let bus_tmp = std::env::temp_dir().join(format!(
+        "lme-bus-tray-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&bus_tmp).unwrap();
+    let bus = spawn_private_bus(&bus_tmp);
+
+    // open panel → activate row (closes) → reopen → right-click row (menu)
+    // → click menu entry (back to list) → wheel over row → capture list
+    let spec = format!(
+        "motion:{a}@2000;click@2100;motion:{r}@3000;click@3100;\
+         motion:{a}@4000;click@4100;motion:{r}@5000;click:r@5100;\
+         motion:{m}@6200;click@6300;motion:{r}@7200;scroll:0,1@7300",
+        a = at(BAR_TRAY_BUTTON),
+        r = at(TRAY_ROW0),
+        m = at(TRAY_MENU_ENTRY0),
+    );
+    let harness = spawn_harness_full(
+        "tray-sni",
+        "1280x800",
+        Some((Capture::AtMs(8000), &png)),
+        None,
+        Some(&spec),
+        false,
+        Some(&["tray"]),
+        &[],
+        Some(&bus.address),
+    );
+
+    // the daemon must own the watcher name on the private bus
+    let out = Command::new("busctl")
+        .arg(format!("--address={}", bus.address))
+        .args(["status", "org.kde.StatusNotifierWatcher"])
+        .output()
+        .expect("busctl status");
+    assert!(
+        out.status.success(),
+        "daemon must own org.kde.StatusNotifierWatcher:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // the fake item: register → bar button → tray panel
+    let sni_log = bus_tmp.join("sni.log");
+    let mut sni = Command::new(target_dir().join("debug").join("examples").join("fake_sni"))
+        .arg(&sni_log)
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn fake_sni");
+    assert!(
+        sni_wait_log(&sni_log, "registered", Duration::from_secs(15)),
+        "fake_sni must register with the watcher"
+    );
+
+    // panel opens on the tray button click
+    assert!(
+        harness.wait_log("created (lme-tray)", Duration::from_secs(15)),
+        "tray button click must open the tray panel"
+    );
+    // the item is tracked with its tooltip title
+    let state = harness.msg(&["tray"]);
+    assert!(
+        state.contains("1 tray items") && state.contains("Fake tooltip"),
+        "tray status must list the fake item: {state}"
+    );
+
+    // row click → Activate on the item, panel closes
+    assert!(
+        sni_wait_log(&sni_log, "activate", Duration::from_secs(15)),
+        "row click must reach the item's Activate"
+    );
+    assert!(
+        harness.wait_log("destroyed (lme-tray)", Duration::from_secs(15)),
+        "activate must close the panel"
+    );
+
+    // reopen → right-click row → AboutToShow + GetLayout (DBusMenu)
+    assert!(
+        sni_wait_log(&sni_log, "abouttoshow 0", Duration::from_secs(15)),
+        "right-click must AboutToShow the dbusmenu"
+    );
+    assert!(
+        sni_wait_log(&sni_log, "getlayout 0", Duration::from_secs(15)),
+        "right-click must GetLayout the dbusmenu"
+    );
+
+    // menu entry click → Event(1, clicked)
+    assert!(
+        sni_wait_log(&sni_log, "event 1 clicked", Duration::from_secs(15)),
+        "menu entry click must reach the item's Event"
+    );
+
+    // wheel over the row → Scroll(+120, vertical)
+    assert!(
+        sni_wait_log(&sni_log, "scroll 120 vertical", Duration::from_secs(15)),
+        "wheel over the row must reach the item's Scroll"
+    );
+
+    // the panel (list page again) matches the golden
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(20)),
+        "timed capture never happened"
+    );
+    assert_matches_golden(&png, "tray-panel.png");
+
+    // killing the item removes it (NameOwnerChanged) and closes the panel
+    let _ = sni.kill();
+    let _ = sni.wait();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let state = harness.msg(&["tray"]);
+        if state.contains("0 tray items") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "item must be removed after its bus name dies (state: {state})"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        harness.wait_log("destroyed (lme-tray)", Duration::from_secs(10)),
+        "panel must close when the last item goes away"
+    );
+}

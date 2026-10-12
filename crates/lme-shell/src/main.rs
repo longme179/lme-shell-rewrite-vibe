@@ -101,10 +101,11 @@ fn parse_msg(args: &[String]) -> Result<ipc::Command, String> {
             Ok(ipc::Command::Dnd { minutes })
         }
         Some("notifications") => Ok(ipc::Command::Notifications),
+        Some("tray") => Ok(ipc::Command::Tray),
         Some("power") => args
             .get(1)
             .map(|action| ipc::Command::Power { action: action.clone() })
             .ok_or_else(|| "power needs an action".into()),
-        _ => Err("commands: ping | status | close | refresh | toggle <panel> | osd <label> [value] | notify <summary> [body] | dnd <minutes> | notifications | power <action>".into()),
+        _ => Err("commands: ping | status | close | refresh | toggle <panel> | osd <label> [value] | notify <summary> [body] | dnd <minutes> | notifications | tray | power <action>".into()),
     }
 }

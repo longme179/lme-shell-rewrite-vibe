@@ -743,7 +743,10 @@ impl Shell {
             }
             return true;
         }
-        if id >= 0x7000_0000_0000 {
+        // Bounded: the tray id space starts at 0x7100_0000_0000 (tray.rs
+        // ids) — the old open-ended `>= 0x7000…` swallowed every tray row
+        // click. Toast ids are 0x7000_0000_0000 + u32 (≤ 0x7000_FFFF_FFFF).
+        if (0x7000_0000_0000..0x7100_0000_0000).contains(&id) {
             let notif_id = (id - 0x7000_0000_0000) as u32;
             self.dismiss_notification(state, notif_id);
             return true;

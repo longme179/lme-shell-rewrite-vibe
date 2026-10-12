@@ -311,20 +311,6 @@ fn prop_i32(m: &HashMap<String, zbus::zvariant::Value<'_>>, k: &str) -> i32 {
     m.get(k).and_then(|v| i32::try_from(v).ok()).unwrap_or(0)
 }
 
-/// Parse the GetLayout reply body (`(u(ia{sv}av))` → layout tree).
-pub fn parse_menu_layout(reply: &zbus::zvariant::Value<'_>) -> Option<MenuNode> {
-    match reply {
-        zbus::zvariant::Value::Structure(s) => {
-            let fields = s.fields();
-            if fields.len() != 2 {
-                return None;
-            }
-            parse_menu_node(&fields[1])
-        }
-        _ => None,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Pixmap decode
 // ---------------------------------------------------------------------------
@@ -876,7 +862,10 @@ fn fetch_menu(
     let reply: zbus::Result<(u32, zbus::zvariant::OwnedValue)> =
         proxy.call("GetLayout", &(0i32, -1i32, props));
     match reply {
-        Ok((_, layout)) => parse_menu_layout(&layout)
+        // `layout` is the (ia{sv}av) member of the (u(ia{sv}av)) reply —
+        // OwnedValue unwraps the variant wrapper, so this is a bare
+        // Structure; parse_menu_node handles it directly.
+        Ok((_, layout)) => parse_menu_node(&layout)
             .map(|root| root.children)
             .ok_or_else(|| "unparsable layout".to_string()),
         Err(e) => Err(format!("GetLayout: {e}")),
@@ -1691,6 +1680,111 @@ mod tests {
         (w, h, argb.repeat((w * h) as usize))
     }
 
+    /// Parts for widget-level tests (theme/fonts/anims/shadows + queue).
+    fn widget_parts() -> (
+        lme_ui::theme::Theme,
+        lme_ui::text::FontBook,
+        lme_ui::anim::Animator,
+        lme_ui::shadow::ShadowCache,
+    ) {
+        (
+            lme_ui::theme::Theme::default_with(&lme_ui::theme::Palette::default()),
+            lme_ui::text::FontBook::new(),
+            lme_ui::anim::Animator::new(),
+            lme_ui::shadow::ShadowCache::new(),
+        )
+    }
+
+    fn test_item() -> TrayItem {
+        TrayItem {
+            key: "org.lme.FakeSni".into(),
+            bus: "org.lme.FakeSni".into(),
+            path: "/StatusNotifierItem".into(),
+            id: "org.lme.FakeSni".into(),
+            title: "Fake Tray App".into(),
+            category: "ApplicationStatus".into(),
+            status: "Active".into(),
+            icon_name: String::new(),
+            icon_pixmap: None,
+            attention_icon_name: String::new(),
+            attention_pixmap: None,
+            tooltip_title: "Fake tooltip".into(),
+            tooltip_desc: String::new(),
+            only_menu: false,
+            menu_path: Some("/MenuBar".into()),
+        }
+    }
+
+    /// Pointer pass over the panel at its real daemon placement (finding c
+    /// regression class): hover, primary click, outside click and wheel.
+    #[test]
+    fn tray_panel_pointer_events() {
+        use lme_ui::widgets::InputEvent;
+        let (theme, mut fonts, mut anims, mut shadows) = widget_parts();
+        let mut popup = TrayPopup::new(
+            Box::new(TrayPanel::new(&[test_item()])),
+            PANEL_WIDTH,
+            TrayPanel::height_for(1),
+            0,
+        );
+        let mut queue = Vec::new();
+        let mut c = lme_ui::widgets::Ctx {
+            theme: &theme,
+            fonts: &mut fonts,
+            anims: &mut anims,
+            shadows: &mut shadows,
+            queue: &mut queue,
+            now: std::time::Instant::now(),
+            focused: None,
+            repaint: false,
+        };
+        // the daemon places the popup over the full 1280x800 output; the
+        // panel lands at (1280-268-14, 58) with rows from y+36
+        popup.layout(&mut c, Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let row0 = Point::new(1132.0, 111.0);
+
+        // hover
+        assert!(popup.deliver(&mut c, &InputEvent::Move(row0), None));
+        let panel_hovered = state_with_panel(&mut popup, |p| p.hovered);
+        assert_eq!(panel_hovered, Some(0));
+
+        // primary click -> TRAY_ROW_ACT
+        c.queue.clear();
+        assert!(popup.deliver(&mut c, &InputEvent::down(row0), None));
+        assert!(popup.deliver(&mut c, &InputEvent::up(row0), None));
+        assert!(c.queue.iter().any(|e| matches!(
+            e,
+            lme_ui::widgets::UiEvent::Click(id) if *id == crate::tray::ids::TRAY_ROW_ACT
+        )));
+
+        // outside click -> Dismiss
+        c.queue.clear();
+        let outside = Point::new(120.0, 400.0);
+        assert!(popup.deliver(&mut c, &InputEvent::down(outside), None));
+        assert!(c
+            .queue
+            .iter()
+            .any(|e| matches!(e, lme_ui::widgets::UiEvent::Dismiss)));
+
+        // wheel over the row -> TRAY_ROW_WHEEL
+        c.queue.clear();
+        assert!(popup.deliver(&mut c, &InputEvent::Scroll(row0, -1.0), None));
+        assert!(c.queue.iter().any(|e| matches!(
+            e,
+            lme_ui::widgets::UiEvent::Wheel(id, dy) if *id == crate::tray::ids::TRAY_ROW_WHEEL && *dy == -1.0
+        )));
+    }
+
+    /// Read the inner panel's hovered field through the popup.
+    fn state_with_panel<R>(popup: &mut TrayPopup, f: impl FnOnce(&mut TrayPanel) -> R) -> R {
+        let panel = popup.panel_mut();
+        let panel = panel
+            .as_any()
+            .downcast_mut::<TrayPanel>()
+            .expect("tray panel");
+        f(panel)
+    }
+
     #[test]
     fn decodes_argb_pixmap_to_premultiplied_rgba() {
         let (w, h, data) = argb_solid(2, 2, [128, 255, 0, 0]);
@@ -1821,15 +1915,7 @@ mod tests {
             vec![],
         );
         let root = layout_value(0, "Root", &[], vec![child, sep, sub]);
-        // wire form: (revision, root) — again bare fields, no variant wrap
-        let reply = zbus::zvariant::Value::Structure(
-            zbus::zvariant::StructureBuilder::new()
-                .append_field(zbus::zvariant::Value::U32(7))
-                .append_field(root)
-                .build()
-                .unwrap(),
-        );
-        let node = parse_menu_layout(&reply).expect("root parses");
+        let node = parse_menu_node(&root).expect("root parses");
         assert_eq!(node.id, 0);
         assert_eq!(node.children.len(), 3);
         assert_eq!(node.children[0].label, "About");
