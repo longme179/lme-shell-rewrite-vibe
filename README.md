@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # lme-shell — native Wayland shell for Fedora 44 + niri 25.11+
 
 The native Rust rewrite of [LME Shell](https://github.com/longme179/lme-fedora-niri-qs)
@@ -147,3 +148,6 @@ The engineering reference is [Noctalia](https://github.com/noctalia-dev/noctalia
 (MIT) — no code or assets copied. Motion curves derive from
 DankMaterialShell (MIT, notice in `third_party/`). Vendored Roboto variable
 font is OFL. The legacy QML shell remains in `legacy/` untouched.
+=======
+# lme-shell-rewrite-vibe
+>>>>>>> e39a8732ba0789d08dfb18de1b998e2e58b7f371
