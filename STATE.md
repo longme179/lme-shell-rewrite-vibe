@@ -108,10 +108,38 @@ persistence lands with the backend catch-up). e2e
 control_stay_awake_night_light_and_power_profile (3 clicks, 3 dry-run
 intent logs). 158 passed + 4 ignored, 27 e2e green.
 
-**Next: Tier 2 completion — 2.6 weather UI, 2.7 agenda/calendar (needs
-the KI-3 Flickable/scroll port), 2.8 clipboard, 2.9 activity island
-(MPRIS transport), 2.10 workspace board, WifiPanel connection list;
-then TIER-2 delivery.**
+**Tier 2.6 weather DONE (2026-10-13)**: weather card first on the
+Controls tab (legacy controlLayout order; WeatherWidget.qml port —
+title/subtitle/refresh row, condition row (monochrome presentation
+glyphs ☀☁☂❄⚡ colored Theme.yellow — the fc-list probe showed DejaVu Sans
+covers them; no hicolor PNG dependency), humidity/wind line, 3-day
+mini-card row with a pure days_from_civil weekday fn, status line
+(error/loading/unconfigured), Open-Meteo attribution). Daemon feed:
+probe_weather rides the visibility-gated 5 s chain (PERF register);
+fake-state json drives deterministic tests; the refresh click logs the
+intent in every mode (fake: "forecast is static", dry-run: [open-meteo],
+live: WeatherClient::refresh + re-probe). e2e
+control_weather_card_and_refresh + golden control-weather.png
+(VLM-inspected: no defects; Today/Wed/Thu proves the weekday math).
+**KI-3 Flickable RESOLVED early** (pulled forward from 2.7 — the weather
+card pushed the Controls tab to ~1000 px vs a ~600 px viewport): lme-ui
+Flickable widget (wheel scroll with translated layout + viewport clip +
+deliver-time re-layout), ControlCenterPanel split into fixed top +
+scrolling body, daemon refreshes now rebuild IN PLACE and keep the scroll
+offset across 5 s refreshes (tab switches reset it). Two bugs found by
+the e2e while landing it: (a) request_render alone re-paints stale rects
+— in-place child swaps need a layout pass (UiState gained
+request_layout; without it every post-refresh click died silently);
+(b) e2e pointer coords must come from the E2E panel geometry (774 high,
+no media card), not the 740-unit layout — the perf-button click missed
+by ~2 px. Wheel sign convention pinned: dy > 0 = down (launcher-wheel
+e2e); the tray's own scroll is now KI-4 (hypothesis: inverted, never
+observable — its panel never scrolls in the e2e).
+164 passed + 4 ignored; 28 e2e green; fmt+clippy clean.
+
+**Next: Tier 2 completion — 2.7 agenda/calendar, 2.8 clipboard, 2.9
+activity island (MPRIS transport), 2.10 workspace board, WifiPanel
+connection list; then TIER-2 delivery.**
 
 Previous session (Amendment 4: robustness + registry + D25):
 
@@ -221,7 +249,7 @@ register lives in docs/PERF.md; re-measure idle at every tier end.**
 ## Gate status (HEAD)
 
 `cargo fmt` ✓ · `cargo clippy --workspace --all-targets -D warnings` ✓ ·
-`cargo test --workspace`: **152 passed, 0 failed, 4 ignored** (lme-backend
+`cargo test --workspace`: **164 passed, 0 failed, 4 ignored** (lme-backend
 goldens ignored with upstream-drift reasons — docs/UPSTREAM_SYNC.md).
 Tier 0.9 + hygiene gate: e2e x10 green (scripts/e2e-x10.sh).
 

@@ -48,17 +48,33 @@ Every entry: symptom, repro, ruled out, not tested, workaround/status.
   (niri at 1.25, compare against docs/screens/bar.png). Do NOT re-enable
   any speculative path without that test. D26 in docs/DECISIONS.md.
 
-## KI-3: control center content can overflow short outputs (no Flickable yet)
+## KI-3: RESOLVED 2026-10-13 — the control-center Flickable landed with Tier 2.6
 
-- **Symptom**: with every optional section present (media card + power
-  profile + brightness), the Controls tab is taller than the panel height
-  on outputs < ~900 px; overflowing sections are clipped (the panel paints
-  with a clip rect) instead of scrolling.
-- **Repro**: open the control center with a live MPRIS player on an
-  800 px-tall output.
-- **Legacy**: ControlDashboard.qml wraps the grid in a Flickable.
-- **Ruled out**: nothing — this is a straight missing feature, not a bug
-  hunt.
-- **Workaround/status**: clipped painting (no bleed over the scrim); the
-  Flickable port (wheel-scroll offset on the content region) is queued
-  with the Tier 2.7 Agenda tab, which needs scrolling natively.
+- **Was**: the Controls tab clipped instead of scrolling on outputs
+  < ~900 px. The weather card (Tier 2.6) made the overflow worse (content
+  ~1000 px vs a ~600 px viewport), so the port was pulled forward from
+  Tier 2.7.
+- **Fix**: lme-ui `Flickable` widget (wheel scroll, translated layout,
+  viewport clip per command, deliver re-layouts after the offset moves);
+  ControlCenterPanel restructured into a fixed top (header + tabs) and a
+  scrolling body; the daemon refresh now rebuilds IN PLACE and requests a
+  re-layout, keeping the scroll offset across 5 s refreshes (tab switches
+  reset it). Found while porting: `request_render` alone re-paints stale
+  rects — in-place child swaps need `request_layout` (UiState gained it).
+- **Proof**: unit tab_content_scrolls_and_rebuild_keeps_offset,
+  widgets::tests::flickable_scrolls_and_clips; e2e
+  control_volume_slider_flushes_action now scrolls to the slider.
+
+## KI-4: tray panel list scroll may be inverted (hypothesis, not reproduced)
+
+- **Symptom**: none observed (the tray panel in its e2e never has enough
+  rows to need scrolling — max_scroll is 0, so the sign never matters).
+- **Observation**: while landing the Flickable sign convention (dy > 0 =
+  wheel down = offset advances; proven by the launcher-wheel e2e), the
+  tray panel's own scroll code uses `self.scroll - dy * ROW_H` — if the
+  tray ever scrolls on a real session, wheel-down would move the list UP.
+- **Not tested**: a tray panel tall enough to scroll (a real session with
+  many SNI items).
+- **Next step**: when the tray panel next gets touched, align it with the
+  Flickable convention (or port it onto the Flickable widget) and add a
+  scroll e2e.

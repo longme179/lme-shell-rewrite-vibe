@@ -86,6 +86,7 @@ Every recurring poll in the daemon, with its period and visibility rule:
 | Settings/palette mtime poll (Amendment 5, hygiene 4) | 5 s | ONLY when inotify is unavailable (EMFILE) or settings.json `hotReload: "poll"` — the inotify path wakes zero | calloop timer |
 | BlueZ adapter probe (Tier 2.3) | with each control-center refresh (5 s while open) | ONLY while the control center is open — one busctl subprocess; zero at idle | system chain |
 | Power-profile probe (Tier 2.5) | with each control-center refresh (5 s while open) | ONLY while the control center is open — one powerprofilesctl; zero at idle (skipped entirely under LME_SHELL_FAKE_STATE) | system chain |
+| Weather snapshot (Tier 2.6) | with each control-center refresh (5 s while open) | ONLY while the control center is open — one in-process WeatherClient::snapshot call; the client's own throttle (forecast 15 min, geo 1 h / 2 min on error) submits jobs to the parked worker thread; zero at idle, zero subprocesses (skipped entirely under LME_SHELL_FAKE_STATE) | system chain |
 
 Idle wakeups with the 1 s empty-tick: ≤ 1.15/s worst case (one ListNames
 call per second while waiting for a player) — within the ≤ 1/s class

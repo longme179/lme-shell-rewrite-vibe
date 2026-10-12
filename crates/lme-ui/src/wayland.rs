@@ -433,6 +433,15 @@ impl UiState {
         Some(result)
     }
 
+    /// Mark the window for a full re-LAYOUT on the next frame (in-place
+    /// child rebuilds — request_render alone re-paints the stale tree).
+    pub fn request_layout(&mut self, id: u64) {
+        if let Some(w) = self.windows.get_mut(&id) {
+            w.needs_layout = true;
+        }
+        self.request_render(id);
+    }
+
     pub fn request_render(&mut self, id: u64) {
         if let Some(w) = self.windows.get_mut(&id) {
             w.needs_render = true;

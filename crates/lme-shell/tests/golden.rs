@@ -195,7 +195,27 @@ fn fake_system_json() -> String {
         "battery": {"available": true, "percent": 77, "charging": true},
         "network": {"connected": true, "ssid": "Golden-5G"},
         "audio": {"available": true, "volume": 64, "muted": false},
-        "powerProfile": "balanced"
+        "powerProfile": "balanced",
+        // Tier 2.6 weather feed (the backend WeatherClient snapshot shape;
+        // deterministic dates so the weekday mini-cards are stable)
+        "weather": {
+            "available": true,
+            "configured": true,
+            "automatic": false,
+            "loading": false,
+            "stale": false,
+            "error": "",
+            "location": {"name": "Hanoi", "country": "Vietnam",
+                         "latitude": 21.03, "longitude": 105.85},
+            "temperature": 29, "feelsLike": 32, "humidity": 76, "wind": 10,
+            "condition": "Light rain", "icon": "weather-rain",
+            "unit": "°C", "windUnit": "km/h", "updatedAt": 1760000000,
+            "daily": [
+                {"date": "2026-10-13", "min": 24, "max": 31, "rainChance": 60},
+                {"date": "2026-10-14", "min": 24, "max": 30, "rainChance": 40},
+                {"date": "2026-10-15", "min": 23, "max": 29, "rainChance": 20}
+            ]
+        }
     }))
     .unwrap()
 }
@@ -1554,9 +1574,11 @@ fn control_stay_awake_night_light_and_power_profile() {
         "1280x800",
         None,
         None,
-        // stay-awake tile (750,338), night-light tile (1115,338),
-        // Performance button (1210,634) — window coords
-        Some("motion:750,338@1500;click@1600;motion:1115,338@2500;click@2600;motion:1210,634@3500;click@3600"),
+        // e2e panel (666,10,600,774): tile rows at panel y 545/613/681 —
+        // stay-awake (row2 left) window (826,645), night-light (row2 right)
+        // (1106,645); the Performance button (profile row, ~panel (514,651)
+        // at max scroll) is below the fold: scroll first.
+        Some("motion:826,645@1500;click@1600;motion:1106,645@2500;click@2600;scroll:0,20@3100;motion:1210,652@3500;click@3600"),
         false,
         None,
         &[],
@@ -1597,6 +1619,70 @@ fn control_stay_awake_night_light_and_power_profile() {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2.6: weather card — golden-compares the Controls tab (weather card
+// first, content below the fold clipped by the KI-3 viewport) and clicks
+// the refresh button, which must log the intent (fake state: static
+// forecast). Unit-locked coords: refresh panel (526,295) -> window
+// (1192,305); control_center::weather_card_states_and_refresh_position.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_weather_card_and_refresh() {
+    let png = capture_png("control-weather", 0);
+    let _ = std::fs::remove_file(&png);
+    let harness = spawn_harness_full(
+        "ctrl-wx",
+        "1280x800",
+        Some((Capture::Commit(3), &png)),
+        None,
+        // refresh click — weather card title row, e2e panel (526,305) +
+        // offset (666,10) -> window (1192,315); unit-locked by
+        // control_center::weather_card_states_and_refresh_position
+        Some("motion:1192,315@1500;click@1600"),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "capture never happened"
+    );
+    let image = decode_png(&png);
+    assert_eq!((image.width, image.height), (1280, 800));
+    let meta = std::fs::metadata(&png).expect("capture file");
+    assert!(meta.len() <= 200 * 1024, "golden candidate too large");
+    assert_matches_golden(&png, "control-weather.png");
+    let shell_log = harness.tmp.join("shell.log");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&shell_log) {
+            if let Some(found) = text
+                .lines()
+                .find(|l| l.contains("weather refresh") && l.contains("fake state"))
+            {
+                line = found.to_string();
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !line.is_empty(),
+        "weather refresh must log the intent; shell.log:\n{}",
+        std::fs::read_to_string(&shell_log).unwrap_or_default()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tier 2.4: Wi-Fi tile — the radio toggle runs the dry-run intent and the
 // optimistic snapshot flips the connected state (WifiPanel's connection
 // list is the TIER-2 completion item).
@@ -1609,8 +1695,9 @@ fn control_wifi_tile_toggles_radio() {
         "1280x800",
         None,
         None,
-        // left tile of the first tile row (unit-locked 2x2 fill layout)
-        Some("motion:815,276@1500;click@1600"),
+        // left tile of the first tile row (row1 panel y 545..601 -> window
+        // (826,583); unit-locked 2x2 fill layout)
+        Some("motion:826,583@1500;click@1600"),
         false,
         None,
         &[],
@@ -1689,10 +1776,10 @@ fn control_bluetooth_tile_toggles() {
         "1280x800",
         None,
         None,
-        // bluetooth tile center in window coords (unit-locked layout); the
+        // bluetooth tile (row1 right) in window coords (1106,583); the
         // late no-op motion keeps the mock alive past the service-missing
         // check (the run ends 3 s after the LAST scripted event)
-        Some("motion:1115,276@1500;click@1600;motion:5,5@9000"),
+        Some("motion:1106,583@1500;click@1600;motion:5,5@9000"),
         false,
         None,
         &[],
@@ -1762,10 +1849,11 @@ fn control_volume_slider_flushes_action() {
         "1280x800",
         None,
         None,
-        // panel spans x 666..1266; volume slider track 702..1230 at y 518
-        // (unit-locked: control_center::volume_slider_position_is_stable);
-        // a click at x=1100 -> ~76%
-        Some("motion:1100,518@1500;click@1600"),
+        // Tier 2.6: the weather card pushed the sliders card below the
+        // fold — scroll to the bottom first (20 notches x 30 px >= max
+        // ~282), then click the track. At max scroll the track sits at
+        // panel y ~518..542 -> window (666+300, 10+530); x=966 -> ~46%
+        Some("motion:966,540@1500;scroll:0,20@1600;motion:966,540@1700;click@1800"),
         false,
         None,
         &[],
@@ -1793,7 +1881,8 @@ fn control_volume_slider_flushes_action() {
     }
     assert!(
         line.contains("wpctl"),
-        "volume flush must log the dry-run intent, got: {line:?}"
+        "volume flush must log the dry-run intent, got: {line:?}\nshell.log:\n{}",
+        std::fs::read_to_string(&shell_log).unwrap_or_default()
     );
     assert!(
         harness.wait_log("created (lme-osd)", Duration::from_secs(10)),

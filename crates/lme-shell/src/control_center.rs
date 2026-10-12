@@ -10,9 +10,7 @@ use lme_ui::color::Color;
 use lme_ui::font_weight::{BOLD, MEDIUM, NORMAL};
 use lme_ui::geom::{Rect, Size};
 use lme_ui::theme::Theme;
-use lme_ui::widgets::{
-    Button, Ctx, FocusScope, HBox, InputEvent, Label, Slider, Spacer, VBox, Widget,
-};
+use lme_ui::widgets::{Button, Ctx, HBox, InputEvent, Label, Slider, Spacer, VBox, Widget};
 
 /// Panel width (legacy `controlWidth` default 600; the daemon clamps to
 /// the output like the QML loader did).
@@ -36,6 +34,8 @@ pub mod ids {
     pub const MEDIA_PREV: u64 = 0x8060;
     pub const MEDIA_PLAY: u64 = 0x8061;
     pub const MEDIA_NEXT: u64 = 0x8062;
+    /// Tier 2.6 weather card refresh button (legacy weatherRefresh action).
+    pub const WEATHER_REFRESH: u64 = 0x8070;
 
     pub fn tab(index: usize) -> u64 {
         TAB_BASE + index as u64
@@ -85,6 +85,37 @@ pub struct ControlData {
     pub ram: Option<f64>,
     pub battery_percent: Option<f64>,
     pub battery_charging: bool,
+    /// Tier 2.6 weather card feed (None hides the card, like media).
+    pub weather: Option<WeatherState>,
+}
+
+/// Tier 2.6 weather snapshot fields the card renders (WeatherWidget.qml
+/// port). Parsed from the daemon `system_snapshot["weather"]` — the backend
+/// WeatherClient snapshot shape (frozen in Phase 1, docs/weather.rs).
+#[derive(Clone)]
+pub struct WeatherState {
+    pub available: bool,
+    pub loading: bool,
+    pub place_name: String,
+    pub place_subtitle: String,
+    pub temperature: Option<f64>,
+    pub unit: String,
+    pub condition: String,
+    pub icon: String,
+    pub feels_like: Option<f64>,
+    pub humidity: Option<f64>,
+    pub wind: Option<f64>,
+    pub wind_unit: String,
+    pub daily: Vec<DailyForecast>,
+    pub error: String,
+}
+
+#[derive(Clone)]
+pub struct DailyForecast {
+    pub date: String,
+    pub max: Option<f64>,
+    pub min: Option<f64>,
+    pub rain_chance: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -113,10 +144,16 @@ pub struct MediaState {
     pub playing: bool,
 }
 
-/// The whole control-center panel (header + tabs + active tab content).
+/// The whole control-center panel: fixed header + tab grid, and the tab
+/// content in a wheel-scrolling Flickable (the QML ControlDashboard
+/// Flickable port — KI-3; landed with Tier 2.6 because the weather card
+/// pushed the Controls tab past 800 px outputs).
 pub struct ControlCenterPanel {
     pub current_tab: usize,
-    content: FocusScope,
+    /// Header + tab grid (never scrolls).
+    top: Box<dyn Widget>,
+    /// Scrolling tab content.
+    body: lme_ui::widgets::Flickable,
     rect: Rect,
 }
 
@@ -124,18 +161,25 @@ impl ControlCenterPanel {
     pub fn new(theme: &Theme, data: &ControlData, current_tab: usize) -> Self {
         let mut panel = Self {
             current_tab,
-            content: FocusScope::new(Box::new(VBox::new(0.0)), false),
+            top: Box::new(VBox::new(0.0)),
+            body: lme_ui::widgets::Flickable::new(Box::new(VBox::new(0.0))),
             rect: Rect::default(),
         };
-        panel.rebuild(theme, data);
+        panel.rebuild(theme, data, current_tab);
         panel
     }
 
-    fn rebuild(&mut self, theme: &Theme, data: &ControlData) {
+    /// Rebuild from a fresh snapshot, KEEPING the scroll offset (data
+    /// refreshes must not move the viewport). Switching tabs resets it.
+    pub fn rebuild(&mut self, theme: &Theme, data: &ControlData, tab: usize) {
+        if tab != self.current_tab {
+            self.current_tab = tab;
+            self.body.scroll = 0.0;
+        }
         let t = theme;
-        let mut column = VBox::new(10.0).padded(14.0);
+        let mut top = VBox::new(10.0).padded(14.0);
         // header (ControlCenter.qml)
-        column = column.push(
+        top = top.push(
             HBox::new(8.0)
                 .push(
                     VBox::new(3.0)
@@ -162,15 +206,17 @@ impl ControlCenterPanel {
             }
             rows = rows.push(hbox);
         }
-        column = column.push(rows);
-        // tab content
-        let body: Box<dyn Widget> = if self.current_tab == 0 {
+        top = top.push(rows);
+        self.top = Box::new(top);
+        // tab content, wrapped for the same side margins the old shared
+        // column gave the body (14 px + the tab's own 8 px padding)
+        let content: Box<dyn Widget> = if self.current_tab == 0 {
             Box::new(controls_tab(t, data))
         } else {
             Box::new(placeholder_tab(t, self.current_tab))
         };
-        column = column.push(body);
-        self.content = FocusScope::new(Box::new(column), false);
+        self.body
+            .set_child(Box::new(VBox::new(0.0).padded(14.0).push(content)));
     }
 }
 
@@ -292,6 +338,12 @@ fn controls_tab(t: &Theme, d: &ControlData) -> VBox {
             .push(Spacer::fill())
             .push(small_button(t, ids::LOCK, "Lock", false, t.text)),
     );
+
+    // weather card (legacy controlLayout order: weather is the FIRST
+    // module card, right after the clock row; Tier 2.6)
+    if let Some(wx) = &d.weather {
+        body = body.push(weather_card(t, wx));
+    }
 
     // quick-toggle tiles (2 columns, legacy GridLayout)
     let wifi = d.wifi.clone().unwrap_or(WifiState {
@@ -560,6 +612,331 @@ fn controls_tab(t: &Theme, d: &ControlData) -> VBox {
     body
 }
 
+// ---------------------------------------------------------------------------
+// Tier 2.6 weather card (WeatherWidget.qml port)
+// ---------------------------------------------------------------------------
+
+/// Parse the backend WeatherClient snapshot (weather.rs `snapshot()` shape)
+/// into the owned card state. Pure + unit-tested against the frozen shape.
+pub fn weather_state(value: &serde_json::Value) -> WeatherState {
+    let get_f = |key: &str| value.get(key).and_then(serde_json::Value::as_f64);
+    let get_s = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let location = value
+        .get("location")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let place_name = location
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let automatic = value
+        .get("automatic")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let place_subtitle = if automatic {
+        "Approximate location · by IP".to_string()
+    } else {
+        location
+            .get("country")
+            .and_then(serde_json::Value::as_str)
+            .filter(|c| !c.is_empty())
+            .unwrap_or("Selected location")
+            .to_string()
+    };
+    let daily = value
+        .get("daily")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .take(3)
+                .map(|row| DailyForecast {
+                    date: row
+                        .get("date")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    max: row.get("max").and_then(serde_json::Value::as_f64),
+                    min: row.get("min").and_then(serde_json::Value::as_f64),
+                    rain_chance: row.get("rainChance").and_then(serde_json::Value::as_f64),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    WeatherState {
+        available: value
+            .get("available")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        loading: value
+            .get("loading")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        place_name,
+        place_subtitle,
+        temperature: get_f("temperature"),
+        unit: get_s("unit"),
+        condition: get_s("condition"),
+        icon: get_s("icon"),
+        feels_like: get_f("feelsLike"),
+        humidity: get_f("humidity"),
+        wind: get_f("wind"),
+        wind_unit: get_s("windUnit"),
+        daily,
+        error: get_s("error"),
+    }
+}
+
+/// `Math.round(value) + suffix` with the legacy "—" for null.
+fn wx_number(value: Option<f64>, suffix: &str) -> String {
+    value
+        .map(|v| format!("{}{suffix}", v.round() as i64))
+        .unwrap_or_else(|| "—".into())
+}
+
+/// Weather icon name → text glyph. Monochrome presentation symbols from
+/// the system fallback fonts (DejaVu Sans on Fedora) — colored by the Text
+/// command like the legacy Theme.yellow line-art (no hicolor PNG dependency
+/// for the deterministic goldens; D7 keeps SVG out of scope).
+fn weather_glyph(icon: &str) -> &'static str {
+    match icon {
+        "weather-sun" => "☀",
+        "weather-rain" => "☂",
+        "weather-snow" => "❄",
+        "weather-storm" => "⚡",
+        // weather-cloud and anything unknown
+        _ => "☁",
+    }
+}
+
+/// "YYYY-MM-DD" → short weekday (legacy `Qt.locale("en_US")... "ddd"` on
+/// date + "T12:00:00"). Pure civil-date math, days-from-epoch (1970-01-01
+/// was a Thursday, i.e. days-from-epoch 0 maps to index 0); unparseable
+/// dates return None.
+fn weekday_short(date: &str) -> Option<&'static str> {
+    let mut parts = date.splitn(3, '-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // per-month day validity (leap-year aware) — "2026-02-30" is rejected
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let dim = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    };
+    if day > dim {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil (proleptic Gregorian).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    Some(DAYS[days.rem_euclid(7) as usize])
+}
+
+/// One daily mini-card (legacy delegate: panel @0.6, radius 16, three
+/// centered lines).
+struct MiniCard {
+    body: Box<dyn Widget>,
+    rect: Rect,
+}
+
+impl MiniCard {
+    fn new(body: Box<dyn Widget>) -> Self {
+        Self {
+            body,
+            rect: Rect::default(),
+        }
+    }
+}
+
+impl Widget for MiniCard {
+    fn measure(&mut self, ctx: &mut Ctx) -> Size {
+        self.body.measure(ctx)
+    }
+    fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
+        self.rect = bounds;
+        self.body.layout(ctx, bounds);
+    }
+    fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<lme_ui::draw::DrawCmd>) {
+        out.push(lme_ui::draw::DrawCmd::RoundedRect {
+            rect: self.rect,
+            radius: ctx.theme.small_radius,
+            fill: Some(ctx.theme.panel_fill.alpha(0.6)),
+            border: None,
+            clip: Some(self.rect),
+        });
+        self.body.paint(ctx, out);
+    }
+    fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        self.body.deliver(ctx, ev, target)
+    }
+    fn rect(&self) -> Rect {
+        self.rect
+    }
+    fn focusables(&self, out: &mut Vec<u64>) {
+        self.body.focusables(out);
+    }
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// The weather module card (WeatherWidget.qml port: title row + refresh,
+/// condition row, humidity/wind line, 3-day forecast, status + attribution).
+fn weather_card(t: &Theme, w: &WeatherState) -> Card {
+    let mut card = VBox::new(10.0).padded(14.0);
+    // title row: place + subtitle | refresh (legacy IconButton row)
+    card = card.push(
+        HBox::new(10.0)
+            .push(
+                VBox::new(3.0)
+                    .push(Label::styled(
+                        &if w.place_name.is_empty() {
+                            "Local weather".to_string()
+                        } else {
+                            w.place_name.clone()
+                        },
+                        16.0,
+                        BOLD,
+                        t.text,
+                    ))
+                    .push(Label::styled(&w.place_subtitle, 11.0, NORMAL, t.muted)),
+            )
+            .push(Spacer::fill())
+            .push(small_button(
+                t,
+                ids::WEATHER_REFRESH,
+                if w.loading { "Updating…" } else { "Refresh" },
+                false,
+                t.text,
+            )),
+    );
+    if w.available {
+        // condition row (legacy wide variant: icon 42, temperature 34)
+        card = card.push(
+            HBox::new(14.0)
+                .push(lme_ui::widgets::Icon::new(
+                    weather_glyph(&w.icon),
+                    42.0,
+                    t.yellow,
+                ))
+                .push(Label::styled(
+                    wx_number(w.temperature, &w.unit),
+                    34.0,
+                    BOLD,
+                    t.text,
+                ))
+                .push(
+                    VBox::new(4.0)
+                        .push(Label::styled(&w.condition, 14.0, MEDIUM, t.text))
+                        .push(Label::styled(
+                            format!("Feels like {}", wx_number(w.feels_like, &w.unit)),
+                            12.0,
+                            NORMAL,
+                            t.muted,
+                        )),
+                ),
+        );
+        card = card.push(Label::styled(
+            format!(
+                "Humidity {}  ·  Wind {}",
+                wx_number(w.humidity, "%"),
+                wx_number(w.wind, &format!(" {}", w.wind_unit))
+            ),
+            12.0,
+            NORMAL,
+            t.muted,
+        ));
+        // 3-day forecast row (panel width is 600: always the wide variant)
+        if !w.daily.is_empty() {
+            let mut row = HBox::new(8.0);
+            for (index, day) in w.daily.iter().take(3).enumerate() {
+                let name = if index == 0 {
+                    "Today".to_string()
+                } else {
+                    weekday_short(&day.date)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| "—".into())
+                };
+                let mut lines = VBox::new(2.0).padded(9.0);
+                for (text, size, weight, color) in [
+                    (name, 11.0, BOLD, t.text),
+                    (
+                        format!("{} / {}", wx_number(day.max, "°"), wx_number(day.min, "°")),
+                        12.0,
+                        NORMAL,
+                        t.text,
+                    ),
+                    (wx_number(day.rain_chance, "% rain"), 10.0, NORMAL, t.cyan),
+                ] {
+                    let mut l = Label::styled(&text, size, weight, color);
+                    l.align = lme_ui::widgets::TextAlign::Center;
+                    lines = lines.push(l);
+                }
+                row = row.push(lme_ui::widgets::Fill::new(Box::new(MiniCard::new(
+                    Box::new(lines),
+                ))));
+            }
+            card = card.push(row);
+        }
+    } else if !w.error.is_empty() || w.loading {
+        // status line (yellow on error, muted otherwise)
+        let text = if !w.error.is_empty() {
+            if w.available {
+                format!("Last forecast · {}", w.error)
+            } else {
+                w.error.clone()
+            }
+        } else if !w.place_name.is_empty() {
+            "Updating forecast…".to_string()
+        } else {
+            "Finding your approximate location…".to_string()
+        };
+        let color = if w.error.is_empty() {
+            t.muted
+        } else {
+            t.yellow
+        };
+        card = card.push(Label::styled(text, 12.0, NORMAL, color));
+    } else {
+        card = card.push(Label::styled(
+            "Choose a location in Weather settings.",
+            12.0,
+            NORMAL,
+            t.muted,
+        ));
+    }
+    card = card.push(Label::styled(
+        "Weather by Open-Meteo",
+        10.0,
+        NORMAL,
+        t.muted,
+    ));
+    Card::new(Box::new(card))
+}
+
 /// Placeholder for tabs whose service module has not landed (NATIVE_PLAN).
 fn placeholder_tab(t: &Theme, tab: usize) -> VBox {
     VBox::new(10.0)
@@ -592,11 +969,23 @@ fn small_button(t: &Theme, id: u64, label: &str, primary: bool, text: Color) -> 
 
 impl Widget for ControlCenterPanel {
     fn measure(&mut self, ctx: &mut Ctx) -> Size {
-        self.content.measure(ctx)
+        let top = self.top.measure(ctx);
+        let content = self.body.measure(ctx);
+        Size::new(top.w.max(content.w), top.h + content.h)
     }
     fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
         self.rect = bounds;
-        self.content.layout(ctx, bounds);
+        // fixed top: natural height (capped at the panel); the body gets
+        // the remainder as its scroll viewport
+        let top_h = self.top.measure(ctx).h.min(bounds.h);
+        self.top
+            .layout(ctx, Rect::new(bounds.x, bounds.y, bounds.w, top_h));
+        let gap = 10.0;
+        let body_h = (bounds.h - top_h - gap).max(0.0);
+        self.body.layout(
+            ctx,
+            Rect::new(bounds.x, bounds.y + top_h + gap, bounds.w, body_h),
+        );
     }
     fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<lme_ui::draw::DrawCmd>) {
         // glass panel background (GlassPanel role controlFill)
@@ -607,26 +996,32 @@ impl Widget for ControlCenterPanel {
             border: Some((ctx.theme.outline_variant, 1.0)),
             clip: Some(self.rect),
         });
-        self.content.paint(ctx, out);
+        self.top.paint(ctx, out);
+        self.body.paint(ctx, out);
     }
     fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
         if let InputEvent::Down { pos: p, .. } = ev {
             if std::env::var_os("LME_PTR_DEBUG").is_some() {
                 let mut ids = Vec::new();
-                self.content.focusables(&mut ids);
+                self.top.focusables(&mut ids);
+                self.body.focusables(&mut ids);
                 eprintln!(
-                    "cc-panel: down ({:.0},{:.0}) rect={:?} focusables={ids:#x?}",
-                    p.x, p.y, self.rect
+                    "cc-panel: down ({:.0},{:.0}) rect={:?} scroll={} max={} viewport={:?} body_rect={:?} focusables={ids:#x?}",
+                    p.x, p.y, self.rect, self.body.scroll, self.body.max_scroll(), self.body.rect(), self.top.rect()
                 );
             }
         }
-        self.content.deliver(ctx, ev, target)
+        // the top bar and the scroll viewport are disjoint; either may hit
+        let top_hit = self.top.deliver(ctx, ev, target);
+        let body_hit = self.body.deliver(ctx, ev, target);
+        top_hit || body_hit
     }
     fn rect(&self) -> Rect {
         self.rect
     }
     fn focusables(&self, out: &mut Vec<u64>) {
-        self.content.focusables(out);
+        self.top.focusables(out);
+        self.body.focusables(out);
     }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
@@ -721,6 +1116,7 @@ pub fn control_data(shell: &crate::daemon::Shell) -> ControlData {
             .get("charging")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        weather: shell.system_snapshot.get("weather").map(weather_state),
     }
 }
 
@@ -768,6 +1164,41 @@ mod tests {
             ram: Some(34.0),
             battery_percent: Some(77.0),
             battery_charging: true,
+            weather: Some(WeatherState {
+                available: true,
+                loading: false,
+                place_name: "Hanoi".into(),
+                place_subtitle: "Vietnam".into(),
+                temperature: Some(29.0),
+                unit: "°C".into(),
+                condition: "Light rain".into(),
+                icon: "weather-rain".into(),
+                feels_like: Some(32.0),
+                humidity: Some(76.0),
+                wind: Some(10.0),
+                wind_unit: "km/h".into(),
+                daily: vec![
+                    DailyForecast {
+                        date: "2026-10-13".into(),
+                        max: Some(31.0),
+                        min: Some(24.0),
+                        rain_chance: Some(60.0),
+                    },
+                    DailyForecast {
+                        date: "2026-10-14".into(),
+                        max: Some(30.0),
+                        min: Some(24.0),
+                        rain_chance: Some(40.0),
+                    },
+                    DailyForecast {
+                        date: "2026-10-15".into(),
+                        max: Some(29.0),
+                        min: Some(23.0),
+                        rain_chance: Some(20.0),
+                    },
+                ],
+                error: String::new(),
+            }),
         }
     }
 
@@ -854,6 +1285,7 @@ mod tests {
             ids::MEDIA_PREV,
             ids::MEDIA_PLAY,
             ids::MEDIA_NEXT,
+            ids::WEATHER_REFRESH,
         ];
         for id in all {
             assert!(
@@ -868,7 +1300,18 @@ mod tests {
         let mut kit = Kit::new();
         let mut panel = ControlCenterPanel::new(&kit.theme, &data(), 0);
         kit.layout(&mut panel);
-        let hit = kit.click_ids_by_scan(&mut panel);
+        // the tab content overflows the viewport (KI-3 Flickable): scan the
+        // visible part, scroll to the bottom, scan again, union.
+        let mut hit = kit.click_ids_by_scan(&mut panel);
+        let max = panel.body.max_scroll();
+        assert!(max > 200.0, "expected overflow, max_scroll={max}");
+        panel.body.scroll = max;
+        kit.layout(&mut panel);
+        for id in kit.click_ids_by_scan(&mut panel) {
+            if !hit.contains(&id) {
+                hit.push(id);
+            }
+        }
         for id in [
             ids::CLOSE,
             ids::tab(0),
@@ -878,12 +1321,15 @@ mod tests {
             ids::TILE_BLUETOOTH,
             ids::TILE_DND,
             ids::TILE_MOTION,
+            ids::TILE_STAY_AWAKE,
+            ids::TILE_NIGHT_LIGHT,
             ids::VOL_MUTE,
             ids::profile(0),
             ids::profile(2),
             ids::MEDIA_PREV,
             ids::MEDIA_PLAY,
             ids::MEDIA_NEXT,
+            ids::WEATHER_REFRESH,
         ] {
             assert!(
                 hit.contains(&id),
@@ -938,7 +1384,10 @@ mod tests {
         let mut root = SlidePanelRight::new(Box::new(panel), 600.0, 758.0, 0);
         let mut c = kit.ctx();
         root.layout(&mut c, Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let p = Point::new(1115.0, 276.0);
+        // bt tile panel-local center comes from
+        // volume_slider_position_is_stable (E2E_BT_TILE_PANEL_POS); window
+        // coords = panel offset (666,10) + panel-local
+        let p = Point::new(666.0 + 441.0, 10.0 + 563.0);
         let before = kit.queue.len();
         let mut c = kit.ctx();
         root.deliver(&mut c, &InputEvent::down(p), None);
@@ -947,23 +1396,23 @@ mod tests {
             .iter()
             .map(|e| format!("{e:?}"))
             .collect();
-        eprintln!("E2E_WRAPPER_EVENTS={events:?}");
         assert!(
             kit.queue[before..]
                 .iter()
                 .any(|e| matches!(e, UiEvent::Click(id) if *id == ids::TILE_BLUETOOTH)),
-            "click at (1115,276) must hit the bluetooth tile, got {events:?}"
+            "click at (1107,573) must hit the bluetooth tile, got {events:?}"
         );
     }
 
-    #[test]
-    fn volume_slider_position_is_stable() {
-        let mut kit = Kit::new();
-        let mut panel = ControlCenterPanel::new(&kit.theme, &data(), 0);
-        kit.layout(&mut panel);
-        let mut found: Option<(f32, f32)> = None;
+    /// One scan at the CURRENT scroll offset; positions are panel-local.
+    fn scan_find(
+        kit: &mut Kit,
+        panel: &mut ControlCenterPanel,
+        want: u64,
+        slide: bool,
+    ) -> Option<(f32, f32)> {
         let mut y = 4.0;
-        while y < 736.0 && found.is_none() {
+        while y < 736.0 {
             let mut x = 4.0;
             while x < PANEL_W - 4.0 {
                 let p = Point::new(x, y);
@@ -971,79 +1420,226 @@ mod tests {
                 let mut c = kit.ctx();
                 panel.deliver(&mut c, &InputEvent::down(p), None);
                 panel.deliver(&mut c, &InputEvent::up(p), None);
-                if kit.queue[before..]
-                    .iter()
-                    .any(|e| matches!(e, UiEvent::Slide(id, _) if *id == ids::VOL_SLIDER))
-                {
-                    found = Some((x, y + 12.0)); // center of the 24px track
-                    break;
+                let got = kit.queue[before..].iter().any(|e| {
+                    matches!(e, UiEvent::Click(id) if *id == want)
+                        || (slide && matches!(e, UiEvent::Slide(id, _) if *id == want))
+                });
+                if got {
+                    return Some((x, y));
                 }
-                x += 2.0;
+                x += if slide { 2.0 } else { 4.0 };
             }
-            y += 2.0;
+            y += if slide { 2.0 } else { 4.0 };
         }
-        let Some((x, y)) = found else {
-            panic!("volume slider never hit by the scan")
+        None
+    }
+
+    #[test]
+    fn volume_slider_position_is_stable() {
+        let mut kit = Kit::new();
+        let mut panel = ControlCenterPanel::new(&kit.theme, &data(), 0);
+        kit.layout(&mut panel);
+        // the slider lives below the fold (weather card + tiles first):
+        // the e2e scrolls to the bottom, so lock its position AT max scroll
+        let max = panel.body.max_scroll();
+        assert!(max > 200.0, "expected overflow, max_scroll={max}");
+        panel.body.scroll = max;
+        kit.layout(&mut panel);
+        let Some((x, y)) = scan_find(&mut kit, &mut panel, ids::VOL_SLIDER, true) else {
+            panic!("volume slider never hit by the scan (scrolled to bottom)")
         };
-        // lock the layout: slider sits in the sliders card, mid-panel
+        let (x, y) = (x + 20.0, y + 12.0); // center of the 24px track
+                                           // lock the layout: the sliders card sits in the lower half of the
+                                           // scrolled viewport
         assert!(
             y > 300.0 && y < 620.0,
             "volume slider moved: ({x},{y}) — update the e2e pointer spec"
         );
         eprintln!("E2E_SLIDER_PANEL_POS={x},{y}");
-        // also locate the Bluetooth tile center (e2e toggle-click coords)
-        let mut tile: Option<(f32, f32)> = None;
-        let mut yy = 4.0;
-        while yy < 736.0 && tile.is_none() {
-            let mut xx = PANEL_W / 2.0;
-            while xx < PANEL_W - 4.0 {
-                let p = Point::new(xx, yy);
-                let before = kit.queue.len();
-                let mut c = kit.ctx();
-                panel.deliver(&mut c, &InputEvent::down(p), None);
-                panel.deliver(&mut c, &InputEvent::up(p), None);
-                if kit.queue[before..]
-                    .iter()
-                    .any(|e| matches!(e, UiEvent::Click(id) if *id == ids::TILE_BLUETOOTH))
-                {
-                    tile = Some((xx, yy + 28.0)); // center of the 56px tile
-                    break;
-                }
-                xx += 2.0;
-            }
-            yy += 2.0;
-        }
-        let Some((tx, ty)) = tile else {
+        // the tiles are above the fold: lock their positions at scroll 0
+        panel.body.scroll = 0.0;
+        kit.layout(&mut panel);
+        let Some((tx, ty)) = scan_find(&mut kit, &mut panel, ids::TILE_BLUETOOTH, false) else {
             panic!("bluetooth tile never hit by the scan")
         };
+        let (tx, ty) = (tx + 130.0, ty + 28.0); // center of the 56px tile, right column
         eprintln!("E2E_BT_TILE_PANEL_POS={tx},{ty}");
-        assert!(ty < 400.0, "bluetooth tile moved: ({tx},{ty})");
-        // stay-awake tile + performance button (e2e click coords)
-        let find_click = |kit: &mut Kit, panel: &mut ControlCenterPanel, want: u64| -> (f32, f32) {
-            let mut y = 4.0;
-            while y < 736.0 {
-                let mut x = 8.0;
-                while x < PANEL_W - 4.0 {
-                    let p = Point::new(x, y);
-                    let before = kit.queue.len();
-                    let mut c = kit.ctx();
-                    panel.deliver(&mut c, &InputEvent::down(p), None);
-                    panel.deliver(&mut c, &InputEvent::up(p), None);
-                    if kit.queue[before..]
-                        .iter()
-                        .any(|e| matches!(e, UiEvent::Click(id) if *id == want))
-                    {
-                        return (x + 60.0, y + 20.0);
-                    }
-                    x += 4.0;
-                }
-                y += 4.0;
-            }
-            panic!("widget {want:#x} never hit");
-        };
-        let (sx, sy) = find_click(&mut kit, &mut panel, ids::TILE_STAY_AWAKE);
+        assert!(
+            ty > 400.0 && ty < 700.0,
+            "bluetooth tile moved: ({tx},{ty})"
+        );
+        let (sx, sy) = scan_find(&mut kit, &mut panel, ids::TILE_STAY_AWAKE, false)
+            .expect("stay-awake tile never hit");
+        let (sx, sy) = (sx + 130.0, sy + 28.0);
         eprintln!("E2E_STAY_AWAKE_PANEL_POS={sx},{sy}");
-        let (px, py) = find_click(&mut kit, &mut panel, ids::profile(2));
+        panel.body.scroll = max;
+        kit.layout(&mut panel);
+        let (px, py) = scan_find(&mut kit, &mut panel, ids::profile(2), false)
+            .expect("performance button never hit");
+        let (px, py) = (px + 60.0, py + 15.0);
         eprintln!("E2E_PERF_BUTTON_PANEL_POS={px},{py}");
+    }
+
+    /// Tier 2.6: the parser must accept the frozen backend WeatherClient
+    /// snapshot shape (weather.rs `snapshot()`), including the automatic
+    /// subtitle rule and the 3-day cap.
+    #[test]
+    fn weather_state_parses_backend_snapshot() {
+        let snap = serde_json::json!({
+            "available": true,
+            "configured": true,
+            "automatic": false,
+            "loading": false,
+            "stale": false,
+            "error": "",
+            "location": {"name": "Hanoi", "country": "Vietnam",
+                         "latitude": 21.03, "longitude": 105.85},
+            "temperature": 29, "feelsLike": 32, "humidity": 76, "wind": 10,
+            "condition": "Light rain", "icon": "weather-rain",
+            "unit": "°C", "windUnit": "km/h", "updatedAt": 1760000000,
+            "daily": [
+                {"date": "2026-10-13", "min": 24, "max": 31, "rainChance": 60},
+                {"date": "2026-10-14", "min": 24, "max": 30, "rainChance": 40},
+                {"date": "2026-10-15", "min": 23, "max": 29, "rainChance": 20},
+                {"date": "2026-10-16", "min": 23, "max": 29, "rainChance": 10}
+            ]
+        });
+        let w = weather_state(&snap);
+        assert!(w.available);
+        assert_eq!(w.place_name, "Hanoi");
+        assert_eq!(w.place_subtitle, "Vietnam"); // manual mode: country
+        assert_eq!(w.temperature, Some(29.0));
+        assert_eq!(w.icon, "weather-rain");
+        assert_eq!(w.unit, "°C");
+        assert_eq!(w.wind_unit, "km/h");
+        assert_eq!(w.daily.len(), 3, "the card shows at most 3 days");
+        assert_eq!(w.daily[2].date, "2026-10-15");
+        // automatic mode: the IP-geolocation subtitle wins over the country
+        let mut auto = snap.clone();
+        auto["automatic"] = serde_json::json!(true);
+        let w2 = weather_state(&auto);
+        assert_eq!(w2.place_subtitle, "Approximate location · by IP");
+        // null forecast numbers survive as None (the card prints "—")
+        let mut nulls = snap.clone();
+        nulls["temperature"] = serde_json::Value::Null;
+        nulls["wind"] = serde_json::Value::Null;
+        let w3 = weather_state(&nulls);
+        assert_eq!(w3.temperature, None);
+        assert_eq!(w3.wind, None);
+    }
+
+    /// days_from_civil math against the system calendar (2026-10-13 is a
+    /// Tuesday; 1970-01-01 was a Thursday; 2000-02-29 a Tuesday).
+    #[test]
+    fn weekday_short_matches_calendar() {
+        assert_eq!(weekday_short("2026-10-13"), Some("Tue"));
+        assert_eq!(weekday_short("2026-10-14"), Some("Wed"));
+        assert_eq!(weekday_short("2026-10-15"), Some("Thu"));
+        assert_eq!(weekday_short("1970-01-01"), Some("Thu"));
+        assert_eq!(weekday_short("2000-02-29"), Some("Tue"));
+        assert_eq!(weekday_short("2024-12-31"), Some("Tue"));
+        assert_eq!(weekday_short("not-a-date"), None);
+        assert_eq!(weekday_short("2026-13-01"), None);
+        assert_eq!(weekday_short("2026-02-30"), None);
+    }
+
+    /// No weather feed -> no card (like the media card), and the refresh
+    /// button position is locked for the e2e pointer spec.
+    #[test]
+    fn weather_card_states_and_refresh_position() {
+        // 1) hidden without a feed
+        let mut kit = Kit::new();
+        let mut d = data();
+        d.weather = None;
+        let mut panel = ControlCenterPanel::new(&kit.theme, &d, 0);
+        kit.layout(&mut panel);
+        let hit = kit.click_ids_by_scan(&mut panel);
+        assert!(
+            !hit.contains(&ids::WEATHER_REFRESH),
+            "weather card must be hidden without a feed"
+        );
+
+        // 2) loading state keeps the refresh button (Updating…), error state
+        // too — the click is always available, the daemon decides what it does
+        let mut d2 = data();
+        let mut wx = d2.weather.clone().unwrap();
+        wx.available = false;
+        wx.loading = true;
+        wx.place_name.clear();
+        d2.weather = Some(wx);
+        let mut panel2 = ControlCenterPanel::new(&kit.theme, &d2, 0);
+        kit.layout(&mut panel2);
+        let hit2 = kit.click_ids_by_scan(&mut panel2);
+        assert!(
+            hit2.contains(&ids::WEATHER_REFRESH),
+            "loading card keeps the refresh button"
+        );
+
+        // 3) lock the refresh-button panel coords for the e2e pointer spec
+        let mut kit3 = Kit::new();
+        let mut panel3 = ControlCenterPanel::new(&kit3.theme, &data(), 0);
+        kit3.layout(&mut panel3);
+        let mut pos: Option<(f32, f32)> = None;
+        let mut y = 4.0;
+        while y < 736.0 && pos.is_none() {
+            let mut x = 8.0;
+            while x < PANEL_W - 4.0 {
+                let p = Point::new(x, y);
+                let before = kit3.queue.len();
+                let mut c = kit3.ctx();
+                panel3.deliver(&mut c, &InputEvent::down(p), None);
+                panel3.deliver(&mut c, &InputEvent::up(p), None);
+                if kit3.queue[before..]
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::Click(id) if *id == ids::WEATHER_REFRESH))
+                {
+                    pos = Some((x + 30.0, y + 15.0)); // center of the button
+                    break;
+                }
+                x += 4.0;
+            }
+            y += 4.0;
+        }
+        let Some((x, y)) = pos else {
+            panic!("refresh button never hit by the scan")
+        };
+        eprintln!("E2E_WEATHER_REFRESH_PANEL_POS={x},{y}");
+        assert!(
+            y > 200.0 && y < 380.0,
+            "refresh button moved: ({x},{y}) — update the e2e pointer spec"
+        );
+    }
+
+    /// Tier 2.6 / KI-3: the tab content scrolls (Flickable), the offset
+    /// survives a data rebuild on the SAME tab, and switching tabs resets
+    /// it — the daemon's 5 s refresh must never snap the viewport to the
+    /// top.
+    #[test]
+    fn tab_content_scrolls_and_rebuild_keeps_offset() {
+        let mut kit = Kit::new();
+        let mut panel = ControlCenterPanel::new(&kit.theme, &data(), 0);
+        kit.layout(&mut panel);
+        assert!(
+            panel.body.max_scroll() > 0.0,
+            "content must overflow at 740"
+        );
+        // wheel down over the viewport center
+        let vp_center = lme_ui::geom::Point::new(300.0, 400.0);
+        {
+            let mut c = kit.ctx();
+            panel.deliver(&mut c, &InputEvent::Scroll(vp_center, 3.0), None);
+        }
+        let scrolled = panel.body.scroll;
+        assert!(scrolled > 50.0, "wheel must scroll, got {scrolled}");
+        // same-tab rebuild keeps the offset
+        panel.rebuild(&kit.theme, &data(), 0);
+        assert_eq!(
+            panel.body.scroll, scrolled,
+            "data refresh must keep the scroll offset"
+        );
+        // tab switch resets it
+        panel.rebuild(&kit.theme, &data(), 3);
+        assert_eq!(panel.body.scroll, 0.0, "tab switch resets the scroll");
+        assert_eq!(panel.current_tab, 3);
     }
 }

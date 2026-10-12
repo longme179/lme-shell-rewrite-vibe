@@ -98,6 +98,10 @@ pub struct Shell {
     pub inhibit_child: Option<std::process::Child>,
     /// Held night-light child (`wlsunset -t <temp>`); killed on disable.
     pub night_child: Option<std::process::Child>,
+    /// Tier 2.6 weather client (lme-backend port of the legacy loopd feed:
+    /// one parked worker thread, jobs submitted only when the panel needs
+    /// a snapshot — PERF register). `None` only if construction failed.
+    pub weather: Option<lme_backend::weather::WeatherClient>,
     pub osd: Option<(u64, Instant)>,
     /// Dry-run volume preview shown by the audio-pill wheel (finding e);
     /// re-seeded from the system snapshot when the preview goes stale.
@@ -166,6 +170,9 @@ impl Shell {
             night_light: false,
             inhibit_child: None,
             night_child: None,
+            weather: Some(lme_backend::weather::WeatherClient::new(
+                std::sync::Arc::new(lme_backend::weather::HttpFetch::new()),
+            )),
             osd: None,
             volume_preview: 0.0,
             volume_preview_at: None,
@@ -895,6 +902,33 @@ impl Shell {
                 "Media transport controls land with the activity island (Tier 2.9)",
                 -1.0,
             ),
+            cc::WEATHER_REFRESH => {
+                // Tier 2.6 (legacy weatherRefresh action): force the
+                // forecast/geo jobs. Fake-state runs log the intent (the
+                // fake forecast is static — nothing to refresh); dry-run
+                // logs like the other actions; live mode pokes the client
+                // (jobs land on the worker thread) and re-probes.
+                if std::env::var_os("LME_SHELL_FAKE_STATE").is_some() {
+                    eprintln!(
+                        "lme-shell: control: weather refresh (fake state: forecast is static)"
+                    );
+                } else if self.actions.dry_run {
+                    eprintln!("lme-shell: dry-run: weather refresh [open-meteo]");
+                } else {
+                    let automatic = self
+                        .settings
+                        .values
+                        .get("weatherAutoLocation")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    if let Some(w) = self.weather.as_mut() {
+                        w.refresh(automatic);
+                    }
+                    self.probe_weather();
+                    eprintln!("lme-shell: control: weather refresh requested");
+                }
+                self.refresh_control_center(state);
+            }
             id if (cc::TAB_BASE..cc::TAB_BASE + 6).contains(&id) => {
                 self.control_tab = (id - cc::TAB_BASE) as usize;
                 self.refresh_control_center(state);
@@ -1036,6 +1070,24 @@ impl Shell {
         }
     }
 
+    /// Tier 2.6 weather snapshot (the legacy loopd calls
+    /// `weather.snapshot(preferences, allow_fetch)` on every loop tick; the
+    /// native daemon only needs it while the control center is open — the
+    /// client throttles internally: forecast 15 min, geo 1 h / 2 min on
+    /// error, all jobs on the parked worker thread). Under
+    /// LME_SHELL_FAKE_STATE the fake system json provides `weather` for
+    /// deterministic tests.
+    fn probe_weather(&mut self) {
+        if std::env::var_os("LME_SHELL_FAKE_STATE").is_some() {
+            return;
+        }
+        let Some(w) = self.weather.as_mut() else {
+            return;
+        };
+        let snap = w.snapshot(&self.settings.values, true);
+        self.system_snapshot.insert("weather".to_string(), snap);
+    }
+
     fn open_control_center(&mut self, state: &mut UiState) {
         let output = state.focused_output();
         let (out_w, out_h) = output
@@ -1054,6 +1106,7 @@ impl Shell {
         let id = state.create_window(spec);
         self.probe_bluetooth();
         self.probe_power_profile();
+        self.probe_weather();
         let data = crate::control_center::control_data(self);
         let panel =
             crate::control_center::ControlCenterPanel::new(&self.theme, &data, self.control_tab);
@@ -1073,17 +1126,40 @@ impl Shell {
         let Some(id) = self.control else { return };
         self.probe_bluetooth();
         self.probe_power_profile();
+        self.probe_weather();
         let data = crate::control_center::control_data(self);
         let tab = self.control_tab;
-        let panel = crate::control_center::ControlCenterPanel::new(&self.theme, &data, tab);
         let w = crate::control_center::PANEL_W;
         if let Some(win) = state.window(id) {
             let h = win.size.1 as f32 - 10.0;
-            let track = REVEAL_TRACK + id;
-            state.set_root(
-                id,
-                Box::new(panels::SlidePanelRight::new(Box::new(panel), w, h, track)),
-            );
+            // In-place rebuild through the SlidePanelRight wrapper: the
+            // panel keeps its scroll offset across 5 s data refreshes
+            // (KI-3 Flickable, landed with Tier 2.6).
+            let updated = win
+                .root()
+                .as_any()
+                .downcast_mut::<panels::SlidePanelRight>()
+                .and_then(|wrap| {
+                    wrap.panel_mut()
+                        .as_any()
+                        .downcast_mut::<crate::control_center::ControlCenterPanel>()
+                        .map(|panel| panel.rebuild(&self.theme, &data, tab))
+                })
+                .is_some();
+            if !updated {
+                // not a control center (shouldn't happen): recreate
+                let panel = crate::control_center::ControlCenterPanel::new(&self.theme, &data, tab);
+                let track = REVEAL_TRACK + id;
+                state.set_root(
+                    id,
+                    Box::new(panels::SlidePanelRight::new(Box::new(panel), w, h, track)),
+                );
+            } else {
+                // the in-place rebuild swapped the tab content: the new
+                // children need a layout pass before they can hit-test
+                // (request_render alone re-paints the stale rects).
+                state.request_layout(id);
+            }
             state.request_render(id);
         }
     }

@@ -1040,6 +1040,132 @@ impl Widget for WheelRegion {
     }
 }
 
+/// Content region that scrolls with the wheel (the QML Flickable port,
+/// KI-3): the child is laid out shifted UP by `scroll` px (the QML
+/// contentY), paint is clipped to the viewport, and wheel motion over the
+/// viewport adjusts `scroll` (clamped to content-viewport) and requests a
+/// repaint. Wheel events never reach the child; all other events pass
+/// through (the enclosing boxes drop positions outside the viewport
+/// before we see them).
+pub struct Flickable {
+    pub child: Box<dyn Widget>,
+    /// Current scroll offset in px (0 = top).
+    pub scroll: f32,
+    /// px per wheel unit (QML Flickable feel; the tray panel uses its row
+    /// height instead).
+    pub step: f32,
+    viewport: Rect,
+    content_h: f32,
+}
+
+impl Flickable {
+    pub fn new(child: Box<dyn Widget>) -> Self {
+        Self {
+            child,
+            scroll: 0.0,
+            step: 30.0,
+            viewport: Rect::default(),
+            content_h: 0.0,
+        }
+    }
+
+    pub fn max_scroll(&self) -> f32 {
+        (self.content_h - self.viewport.h).max(0.0)
+    }
+
+    /// Replace the scrolled content (panel refreshes keep the offset).
+    pub fn set_child(&mut self, child: Box<dyn Widget>) {
+        self.child = child;
+    }
+
+    /// Recompute the clamp after content/viewport changes (e.g. content
+    /// shrank below the current offset).
+    pub fn clamp_scroll(&mut self) {
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// Re-run the translated child layout (called from deliver after the
+    /// offset moves, and from layout()).
+    fn relayout(&mut self, ctx: &mut Ctx) {
+        let content = self.child.measure(ctx);
+        self.content_h = content.h;
+        self.child.layout(
+            ctx,
+            Rect::new(
+                self.viewport.x,
+                self.viewport.y - self.scroll,
+                self.viewport.w,
+                content.h.max(self.viewport.h),
+            ),
+        );
+    }
+}
+
+impl Widget for Flickable {
+    fn measure(&mut self, ctx: &mut Ctx) -> Size {
+        self.child.measure(ctx)
+    }
+    fn layout(&mut self, ctx: &mut Ctx, bounds: Rect) {
+        self.viewport = bounds;
+        self.clamp_scroll();
+        // Lay the child out shifted UP by `scroll`: content row k paints
+        // at viewport y k - scroll, and hit-testing lands on the
+        // translated rects (the QML contentY offset).
+        self.relayout(ctx);
+    }
+    fn paint(&mut self, ctx: &mut Ctx, out: &mut Vec<DrawCmd>) {
+        let start = out.len();
+        self.child.paint(ctx, out);
+        clip_cmds_to(out, start, self.viewport);
+    }
+    fn deliver(&mut self, ctx: &mut Ctx, ev: &InputEvent, target: Option<u64>) -> bool {
+        if let InputEvent::Scroll(p, dy) = ev {
+            if self.viewport.contains(*p) {
+                // dy > 0 = wheel down (mock + axis_lines convention, proven
+                // by the launcher-wheel e2e): the offset advances.
+                self.scroll = (self.scroll + dy * self.step).clamp(0.0, self.max_scroll());
+                // re-layout immediately so hit-testing (and paint) see the
+                // translated rects — the QML contentY move.
+                self.relayout(ctx);
+                ctx.request_repaint();
+                return true;
+            }
+        }
+        self.child.deliver(ctx, ev, target)
+    }
+    fn rect(&self) -> Rect {
+        self.viewport
+    }
+    fn focusables(&self, out: &mut Vec<u64>) {
+        self.child.focusables(out);
+    }
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Intersect every command appended after `start` with `viewport` (the
+/// Flickable clip; child commands carry their own smaller clips). Commands
+/// that fall entirely outside get a zero rect that never contains a pixel.
+fn clip_cmds_to(out: &mut [DrawCmd], start: usize, viewport: Rect) {
+    for cmd in &mut out[start..] {
+        let clip = match cmd {
+            DrawCmd::RoundedRect { clip, .. } => clip,
+            DrawCmd::Circle { clip, .. } => clip,
+            DrawCmd::Text { clip, .. } => clip,
+            DrawCmd::Shadow { clip, .. } => clip,
+            DrawCmd::Image { clip, .. } => clip,
+        };
+        *clip = Some(match clip.map(|c| c.intersect(viewport)) {
+            Some(Some(c)) => c,
+            // Empty intersection: a zero rect at the viewport corner — the
+            // render clip test (x >= c.x && x < c.right) can never pass.
+            Some(None) => Rect::new(viewport.x, viewport.y, 0.0, 0.0),
+            None => viewport,
+        });
+    }
+}
+
 pub struct Switch {
     pub id: u64,
     pub on: bool,
@@ -1933,6 +2059,73 @@ mod tests {
             })
             .unwrap();
         assert_eq!(first, "item 87");
+    }
+
+    #[test]
+    fn flickable_scrolls_and_clips() {
+        let mut parts = test_ctx();
+        // tall content: 20 x 40px rows + a click target at the very bottom
+        let mut col = VBox::new(0.0);
+        for i in 0..20 {
+            col = col.push(Label::styled(format!("row {i}"), 14.0, 400, Color::WHITE));
+        }
+        col = col.push(Button::new(77, "Bottom"));
+        let mut fl = Flickable::new(Box::new(col));
+        with_ctx(&mut parts, |mut c| fl.measure(&mut c));
+        with_ctx(&mut parts, |mut c| {
+            fl.layout(&mut c, Rect::new(10.0, 100.0, 400.0, 300.0))
+        });
+        assert!(fl.content_h > 300.0, "content taller than the viewport");
+        let max = fl.max_scroll();
+        assert!(max > 100.0);
+
+        // wheel at the viewport center scrolls by step * dy, clamped
+        with_ctx(&mut parts, |mut c| {
+            fl.deliver(
+                &mut c,
+                &InputEvent::Scroll(Point::new(200.0, 250.0), 2.0),
+                None,
+            )
+        });
+        assert_eq!(fl.scroll, 60.0, "two notches x 30px step");
+        with_ctx(&mut parts, |mut c| {
+            fl.deliver(
+                &mut c,
+                &InputEvent::Scroll(Point::new(200.0, 250.0), 100.0),
+                None,
+            )
+        });
+        assert_eq!(fl.scroll, max, "clamped at max_scroll");
+
+        // the Bottom button now sits at the viewport bottom; a click at
+        // its translated position must reach it (translated hit-testing)
+        let hit77 = with_ctx(&mut parts, |mut c| {
+            fl.deliver(&mut c, &InputEvent::down(Point::new(200.0, 380.0)), None);
+            fl.deliver(&mut c, &InputEvent::up(Point::new(200.0, 380.0)), None);
+            c.queue
+                .iter()
+                .any(|e| matches!(e, UiEvent::Click(id) if *id == 77))
+        });
+        assert!(hit77, "click at the scrolled-in button reached Click(77)");
+
+        // paint clip: every command stays inside the viewport
+        let mut out = Vec::new();
+        with_ctx(&mut parts, |mut c| fl.paint(&mut c, &mut out));
+        assert!(!out.is_empty());
+        for cmd in &out {
+            let clip = match cmd {
+                DrawCmd::RoundedRect { clip, .. } => *clip,
+                DrawCmd::Circle { clip, .. } => *clip,
+                DrawCmd::Text { clip, .. } => *clip,
+                DrawCmd::Shadow { clip, .. } => *clip,
+                DrawCmd::Image { clip, .. } => *clip,
+            };
+            let clip = clip.expect("flickable sets a clip on every command");
+            assert!(
+                clip.y >= 100.0 - 0.01 && clip.bottom() <= 400.0 + 0.01,
+                "command clip {clip:?} escapes the viewport"
+            );
+        }
     }
 }
 

@@ -143,6 +143,12 @@ impl SlidePanelRight {
             rect: Rect::default(),
         }
     }
+
+    /// The wrapped panel (in-place updates — e.g. the control center
+    /// refresh rebuilds its children but keeps the scroll offset).
+    pub fn panel_mut(&mut self) -> &mut Box<dyn Widget> {
+        &mut self.panel
+    }
 }
 
 impl Widget for SlidePanelRight {
