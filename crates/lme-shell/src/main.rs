@@ -10,6 +10,7 @@ mod daemon;
 mod ipc;
 mod launcher_data;
 mod niri;
+mod notifications;
 mod panels;
 mod power;
 mod settings;
@@ -86,10 +87,23 @@ fn parse_msg(args: &[String]) -> Result<ipc::Command, String> {
             let value: f32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(-1.0);
             Ok(ipc::Command::Osd { label, value })
         }
+        Some("notify") => {
+            let summary = args.get(1).ok_or("notify needs a summary")?.clone();
+            let body = args.get(2).cloned().unwrap_or_default();
+            Ok(ipc::Command::Notify { summary, body })
+        }
+        Some("dnd") => {
+            let minutes: i64 = args
+                .get(1)
+                .and_then(|v| v.parse().ok())
+                .ok_or("dnd needs minutes (-1 | 0 | >0)")?;
+            Ok(ipc::Command::Dnd { minutes })
+        }
+        Some("notifications") => Ok(ipc::Command::Notifications),
         Some("power") => args
             .get(1)
             .map(|action| ipc::Command::Power { action: action.clone() })
             .ok_or_else(|| "power needs an action".into()),
-        _ => Err("commands: ping | status | close | refresh | toggle <panel> | osd <label> [value] | power <action>".into()),
+        _ => Err("commands: ping | status | close | refresh | toggle <panel> | osd <label> [value] | notify <summary> [body] | dnd <minutes> | notifications | power <action>".into()),
     }
 }

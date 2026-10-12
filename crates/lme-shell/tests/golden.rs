@@ -103,6 +103,92 @@ enum Capture {
     AtMs(u64),
 }
 
+/// A private session bus for the notification-daemon tests (the sandbox has
+/// no user bus). Returns the DBUS_SESSION_BUS_ADDRESS to hand to the daemon
+/// and a monitor log path; the daemon is killed when the guard drops.
+struct PrivateBus {
+    address: String,
+    monitor_path: PathBuf,
+    daemon: Child,
+    _monitor: Child,
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        let _ = self._monitor.kill();
+        let _ = self._monitor.wait();
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+fn spawn_private_bus(tmp: &Path) -> PrivateBus {
+    let socket = tmp.join("bus");
+    let mut daemon = Command::new("dbus-daemon")
+        .args(["--session", "--fork", "--print-address=1"])
+        .arg(format!("--address=unix:path={}", socket.display()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn dbus-daemon (is dbus installed?)");
+    // first stdout line is the address
+    let mut address = String::new();
+    {
+        let stdout = daemon.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        reader.read_line(&mut address).expect("read bus address");
+    }
+    let address = address.trim().to_string();
+    assert!(address.starts_with("unix:"), "bus address: {address}");
+    // monitor for signal assertions (ActionInvoked / NotificationClosed);
+    // note: dbus-monitor wants "--address ADDR" (busctl accepts "--address=ADDR")
+    let monitor_path = tmp.join("dbus-monitor.log");
+    let monitor = Command::new("dbus-monitor")
+        .arg("--address")
+        .arg(&address)
+        .stdout(Stdio::from(std::fs::File::create(&monitor_path).unwrap()))
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn dbus-monitor");
+    PrivateBus {
+        address,
+        monitor_path,
+        daemon,
+        _monitor: monitor,
+    }
+}
+
+/// Send a notification over a private bus via busctl (real client tooling).
+#[allow(clippy::too_many_arguments)]
+fn dbus_notify(bus: &PrivateBus, app: &str, summary: &str, body: &str, timeout_ms: i32) {
+    let out = Command::new("busctl")
+        .arg(format!("--address={}", bus.address))
+        .args([
+            "call",
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "Notify",
+            "susssasa{sv}i",
+        ])
+        .arg(app)
+        .arg("0")
+        .arg("")
+        .arg(summary)
+        .arg(body)
+        .arg("0") // no actions
+        .arg("0") // empty hints
+        .arg(timeout_ms.to_string())
+        .output()
+        .expect("busctl call");
+    assert!(
+        out.status.success(),
+        "Notify failed: {}\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 /// A deterministic .desktop entry injected into the daemon's isolated
 /// XDG_DATA_HOME (tests that pass `apps` also blank XDG_DATA_DIRS so the
 /// system list cannot leak in).
@@ -111,7 +197,8 @@ fn fake_desktop(name: &str) -> String {
 }
 
 /// Spawn compositor + daemon with the full option set (pointer injection,
-/// timed captures, isolated app list, single-module barLayout).
+/// timed captures, isolated app list, single-module barLayout, private
+/// session bus for the notification daemon).
 #[allow(clippy::too_many_arguments)]
 fn spawn_harness_full(
     name: &str,
@@ -122,6 +209,7 @@ fn spawn_harness_full(
     animations: bool,
     bar_right: Option<&[&str]>,
     apps: &[&str], // app NAMES; bodies are generated
+    dbus_addr: Option<&str>,
 ) -> Harness {
     let unique = format!(
         "{}-{}-{}",
@@ -229,6 +317,9 @@ fn spawn_harness_full(
         // only the injected .desktop files (see Applications::default_paths)
         dcmd.env("XDG_DATA_DIRS", "");
     }
+    if let Some(addr) = dbus_addr {
+        dcmd.env("DBUS_SESSION_BUS_ADDRESS", addr);
+    }
     dcmd.stdout(Stdio::null())
         .stderr(std::fs::File::create(tmp.join("shell.log")).unwrap());
     let mut daemon = dcmd.spawn().expect("spawn lme-shell daemon");
@@ -270,10 +361,18 @@ fn spawn_harness(
         animations,
         None,
         &[],
+        None,
     )
 }
 
 impl Harness {
+    /// Poll the compositor log once (no waiting).
+    fn log_contains(&self, tag: &str) -> bool {
+        std::fs::read_to_string(&self.log_path)
+            .map(|text| text.contains(tag))
+            .unwrap_or(false)
+    }
+
     fn msg(&self, args: &[&str]) -> String {
         let out = Command::new(find_bin("lme-shell"))
             .arg("msg")
@@ -480,6 +579,7 @@ fn launcher_types_and_launches() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(900));
     harness.msg(&["toggle", "launcher"]);
@@ -559,6 +659,7 @@ fn golden_launcher() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -616,6 +717,7 @@ fn pointer_click_opens_launcher() {
         false,
         None,
         &[],
+        None,
     );
     assert!(
         harness.wait_log("created (lme-launcher)", Duration::from_secs(10)),
@@ -638,6 +740,7 @@ fn launcher_row_click_launches_and_closes() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -666,6 +769,7 @@ fn outside_click_dismisses_launcher() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -701,6 +805,7 @@ fn golden_launcher_wheel_notch() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -730,6 +835,7 @@ fn golden_launcher_touchpad_scroll() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -760,6 +866,7 @@ fn golden_launcher_scroll_stop_resets() {
         false,
         None,
         &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+        None,
     );
     std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
@@ -788,6 +895,7 @@ fn golden_wheel_over_audio_pill() {
         false,
         Some(&["audio"]),
         &[],
+        None,
     );
     assert!(
         harness.wait_log("created (lme-osd)", Duration::from_secs(10)),
@@ -824,6 +932,7 @@ fn click_audio_pill_shows_control_notice() {
         false,
         Some(&["audio"]),
         &[],
+        None,
     );
     assert!(
         harness.wait_log("created (lme-osd)", Duration::from_secs(10)),
@@ -841,4 +950,194 @@ fn click_audio_pill_shows_control_notice() {
         image.height
     );
     assert_matches_golden(&png, "osd-control-notice.png");
+}
+
+// ---------------------------------------------------------------------------
+// Notification daemon e2e (Tier 1.9): real D-Bus on a private session bus
+// ---------------------------------------------------------------------------
+
+/// A real org.freedesktop.Notifications client (busctl) can send a
+/// notification; the daemon shows the toast surface, tracks it live, and
+/// expires it into history after the client timeout.
+#[test]
+fn dbus_notification_toast_lifecycle() {
+    let png = capture_png("toast", 0);
+    let _ = std::fs::remove_file(&png);
+    // the bus must exist BEFORE the daemon starts (it grabs the name at boot)
+    let bus_tmp = std::env::temp_dir().join(format!(
+        "lme-bus-toast-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&bus_tmp).unwrap();
+    let bus = spawn_private_bus(&bus_tmp);
+    let harness = spawn_harness_full(
+        "notif-lifecycle",
+        "1280x800",
+        Some((Capture::AtMs(2600), &png)),
+        None,
+        None,
+        false,
+        None,
+        &[],
+        Some(&bus.address),
+    );
+    // the daemon must own the name on the private bus
+    let out = Command::new("busctl")
+        .arg(format!("--address={}", bus.address))
+        .args(["status", "org.freedesktop.Notifications"])
+        .output()
+        .expect("busctl status");
+    assert!(
+        out.status.success(),
+        "daemon must own org.freedesktop.Notifications:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // GetServerInformation round-trip
+    let out = Command::new("busctl")
+        .arg(format!("--address={}", bus.address))
+        .args([
+            "call",
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "GetServerInformation",
+        ])
+        .output()
+        .expect("busctl get-server-information");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("lme-shell"),
+        "server info: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // send a notification (2 s expiry); toast surface must map
+    dbus_notify(
+        &bus,
+        "Golden App",
+        "Hello from D-Bus",
+        "Body via busctl",
+        5000,
+    );
+    assert!(
+        harness.wait_log("created (lme-notifications)", Duration::from_secs(10)),
+        "toast window never mapped"
+    );
+    // hub state via IPC
+    let state = harness.msg(&["notifications"]);
+    assert!(
+        state.contains("1 live") && state.contains("1 unread"),
+        "notification live: {state}"
+    );
+    // timed capture of the topmost (Overlay toast) surface
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "toast capture never happened"
+    );
+    let image = decode_png(&png);
+    assert!(
+        image.width == 360,
+        "toast surface width must be 360, got {}x{}",
+        image.width,
+        image.height
+    );
+    assert!(image.height >= 90, "toast card has content");
+    assert_matches_golden(&png, "notification-toast.png");
+    // after the 2 s expiry the toast window closes and history keeps it
+    assert!(
+        harness.wait_log("destroyed (lme-notifications)", Duration::from_secs(10)),
+        "toast must close after the client timeout"
+    );
+    let state = harness.msg(&["notifications"]);
+    assert!(
+        state.contains("0 live") && state.contains("1 history"),
+        "notification expired into history: {state}"
+    );
+    // the daemon emitted NotificationClosed(1, expired) on the bus
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&bus.monitor_path) {
+            if text.contains("NotificationClosed") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "NotificationClosed signal never appeared on the bus"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// DND suppresses toasts (legacy rule) but the notification still lands in
+/// the hub; turning DND off lets the next one pop up again.
+#[test]
+fn dbus_dnd_suppresses_toasts() {
+    let bus_tmp = std::env::temp_dir().join(format!(
+        "lme-bus-dnd-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&bus_tmp).unwrap();
+    let bus = spawn_private_bus(&bus_tmp);
+    let harness = spawn_harness_full(
+        "notif-dnd",
+        "1280x800",
+        None,
+        None,
+        None,
+        false,
+        None,
+        &[],
+        Some(&bus.address),
+    );
+    // DND on (until turned off)
+    let reply = harness.msg(&["dnd", "-1"]);
+    assert!(reply.contains("dnd until -1"), "dnd reply: {reply}");
+    dbus_notify(&bus, "Muted Test", "No toast please", "", 60_000);
+    std::thread::sleep(Duration::from_millis(600));
+    let state = harness.msg(&["notifications"]);
+    assert!(state.contains("1 live"), "still tracked: {state}");
+    assert!(
+        !harness.log_contains("created (lme-notifications)"),
+        "DND must suppress the toast surface"
+    );
+    // DND off: the next notification pops up
+    harness.msg(&["dnd", "0"]);
+    dbus_notify(&bus, "Loud Test", "Toast now", "", 60_000);
+    assert!(
+        harness.wait_log("created (lme-notifications)", Duration::from_secs(10)),
+        "toast must appear once DND is off"
+    );
+}
+
+/// Local notifications via IPC (msg notify) work without any bus.
+#[test]
+fn local_notification_ipc() {
+    let harness = spawn_harness_full(
+        "notif-local",
+        "1280x800",
+        None,
+        None,
+        None,
+        false,
+        None,
+        &[],
+        None,
+    );
+    harness.msg(&["notify", "Shell message", "Local body"]);
+    assert!(
+        harness.wait_log("created (lme-notifications)", Duration::from_secs(10)),
+        "local notification must show a toast"
+    );
+    let state = harness.msg(&["notifications"]);
+    assert!(
+        state.contains("LME Shell") && state.contains("1 unread"),
+        "local notification tracked: {state}"
+    );
+    // local notifications use the 7 s default expiry
+    assert!(
+        harness.wait_log("destroyed (lme-notifications)", Duration::from_secs(15)),
+        "local notification must expire"
+    );
 }

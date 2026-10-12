@@ -32,6 +32,17 @@ pub enum Command {
         label: String,
         value: f32,
     },
+    /// notify <summary> [body] — local notification toast (Tier 1.9).
+    Notify {
+        summary: String,
+        body: String,
+    },
+    /// dnd <minutes> — -1 until off, 0 off, >0 timed (legacy setDnd).
+    Dnd {
+        minutes: i64,
+    },
+    /// notifications — live + history + unread (center payload / testing).
+    Notifications,
     /// status <message> — status toast (like QML lastResult messages).
     StatusMessage {
         message: String,

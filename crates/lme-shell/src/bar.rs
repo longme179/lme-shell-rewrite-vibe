@@ -207,12 +207,14 @@ fn build_module(
             "application launcher",
         )),
         "overview" => Some(action_button(shell, ids::OVERVIEW, "⌘", "overview")),
-        "notifications" => Some(action_button(
-            shell,
-            ids::NOTIFICATIONS,
-            "🔔",
-            "notifications",
-        )),
+        "notifications" => {
+            // bell with an unread dot (legacy BarModule badge)
+            let mut b = action_button_inner(shell, ids::NOTIFICATIONS, "🔔");
+            if shell.notifications.unread > 0 {
+                b.badge = Some(theme.pink);
+            }
+            Some(Box::new(b))
+        }
         "settings" => Some(action_button(shell, ids::SETTINGS, "⚙", "settings")),
         "clipboard" => Some(action_button(shell, ids::CLIPBOARD, "📋", "clipboard")),
         "tray" => {
@@ -435,6 +437,12 @@ fn build_module(
 }
 
 fn action_button(shell: &Shell, id: u64, glyph: &str, _tooltip: &str) -> Box<dyn Widget> {
+    Box::new(action_button_inner(shell, id, glyph))
+}
+
+/// The Button behind action_button (returned unboxed so callers can tweak
+/// fields like the unread badge).
+fn action_button_inner(shell: &Shell, id: u64, glyph: &str) -> Button {
     let theme = &shell.theme;
     let mut b = Button::new(id, glyph);
     b.label_size = 15.0;
@@ -445,7 +453,7 @@ fn action_button(shell: &Shell, id: u64, glyph: &str, _tooltip: &str) -> Box<dyn
     b.radius = 15.0;
     b.min_h = 30.0;
     b.min_w = 30.0;
-    Box::new(b)
+    b
 }
 
 /// Status-module pill (audio / network / battery): icon + caption that acts

@@ -30,7 +30,8 @@ with this yet.
 | settings.json + palette.json hot reload (inotify), upstream-added keys preserved on writes | done | unit (tmp dirs) | no |
 | Idle cost: 0–2 CPU ticks / 60 s, 0.15 wakeups/s, 11.9 MB RSS, 9–12 ms cold start | done | bench (docs/PERF.md) | re-measure on laptop |
 | Panel reveal animation: frame-callback driven, render p95 3.1 ms | done | bench (mock vsync-grid: 120.0 fps reveal, 0 late, 0 dropped) | fps at real scanout |
-| Notification daemon (toasts/history/DND), system tray, control center, clipboard UI, settings window, Wi-Fi/Bluetooth panels, night light, weather UI, activity island | **missing (Tier 2/3)** | — | — |
+| Notification daemon: org.freedesktop.Notifications server, toast popups (top-right, ≤3), expiry rules, replace-by-id, DND + muted apps, bell unread badge, history (in-memory) | done (server + toasts e2e'd against a real private D-Bus) | unit + e2e (busctl client, dbus-monitor signal check) | yes (real session bus / real apps) |
+| Notification CENTER panel, system tray, control center, clipboard UI, settings window, Wi-Fi/Bluetooth panels, night light, weather UI, activity island | **missing (Tier 2/3)** | — | — |
 | Backend services (niri IPC, prefs with cross-writer locking, weather, clipboard store, app scan, charging) | done (frozen Phase 0 contract) | 50 golden parity tests vs the Python backend | no |
 
 Full line-by-line status: [`docs/NATIVE_PLAN.md`](docs/NATIVE_PLAN.md).

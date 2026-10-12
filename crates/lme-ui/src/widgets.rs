@@ -650,6 +650,8 @@ pub struct Button {
     pub icon: Option<(String, f32)>,
     /// Color for the icon glyph (defaults to `text_color` when None).
     pub icon_color: Option<Color>,
+    /// Optional unread-badge dot drawn at the top-right corner (bar bell).
+    pub badge: Option<Color>,
     pub fill: Color,
     pub hover_fill: Option<Color>,
     pub text_color: Color,
@@ -673,6 +675,7 @@ impl Button {
             label_weight: font_weight::MEDIUM,
             icon: None,
             icon_color: None,
+            badge: None,
             fill: Color::rgb(0.2, 0.2, 0.25),
             hover_fill: None,
             text_color: Color::WHITE,
@@ -772,6 +775,16 @@ impl Widget for Button {
             border,
             clip: None,
         });
+        if let Some(badge) = self.badge {
+            // unread dot (legacy BarModule: 6px pink, top-right, 4px in)
+            out.push(DrawCmd::Circle {
+                cx: self.rect.x + self.rect.w - 7.0,
+                cy: self.rect.y + 7.0,
+                r: 3.0,
+                fill: badge,
+                clip: None,
+            });
+        }
         self.ensure_shaped(ctx);
         let s = self.shaped.as_ref().expect("shaped");
         let icon = self.shaped_icon.as_ref().filter(|_| self.icon.is_some());

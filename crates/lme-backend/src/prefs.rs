@@ -291,6 +291,37 @@ pub fn validate_preference(key: &str, value: &Value) -> Result<Value, String> {
                 Err(invalid())
             }
         }
+        // DND deadline: 0 = off, -1 = until turned off, else epoch
+        // milliseconds (mirrors legacy desktop_backend.py).
+        "dndUntil" => {
+            let v = json_int(value).ok_or_else(invalid)?;
+            if (-1..=4_102_444_800_000).contains(&v) {
+                Ok(serde_json::json!(v))
+            } else {
+                Err(invalid())
+            }
+        }
+        // Apps whose popups are suppressed (legacy notificationMutedApps:
+        // <= 100 entries after dedupe — the Python backend normalizes
+        // duplicates on write, it does not reject them).
+        "notificationMutedApps" => {
+            let list = value.as_array().ok_or_else(invalid)?;
+            if list.len() > 100 {
+                return Err(invalid());
+            }
+            let mut seen = std::collections::HashSet::new();
+            let mut names = Vec::new();
+            for item in list {
+                let name = item.as_str().ok_or_else(invalid)?.trim().to_string();
+                if name.is_empty() {
+                    return Err(invalid());
+                }
+                if seen.insert(name.clone()) {
+                    names.push(Value::String(name));
+                }
+            }
+            Ok(Value::Array(names))
+        }
         _ => Err(invalid()),
     }
 }
@@ -568,5 +599,33 @@ mod tests {
         let reloaded = Preferences::new(path);
         assert_eq!(reloaded.values["opacity"], serde_json::json!(0.85));
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn dnd_until_validation_mirrors_python() {
+        assert!(validate_preference("dndUntil", &serde_json::json!(0)).is_ok());
+        assert!(validate_preference("dndUntil", &serde_json::json!(-1)).is_ok());
+        assert!(validate_preference("dndUntil", &serde_json::json!(4_102_444_800_000i64)).is_ok());
+        // out of range or wrong type (mirrors test_upgrades.py)
+        assert!(validate_preference("dndUntil", &serde_json::json!(-2)).is_err());
+        assert!(validate_preference("dndUntil", &serde_json::json!(4_102_444_800_001i64)).is_err());
+        assert!(validate_preference("dndUntil", &serde_json::json!("soon")).is_err());
+    }
+
+    #[test]
+    fn muted_apps_dedupe_and_limits() {
+        // legacy dedupes ["Music", "Music"] to ["Music"]
+        let ok = validate_preference(
+            "notificationMutedApps",
+            &serde_json::json!(["Music", "Music"]),
+        )
+        .unwrap();
+        assert_eq!(ok, serde_json::json!(["Music"]));
+        assert!(
+            validate_preference("notificationMutedApps", &serde_json::json!(["", "Music"]),)
+                .is_err()
+        );
+        let many: Vec<String> = (0..101).map(|i| format!("app{i}")).collect();
+        assert!(validate_preference("notificationMutedApps", &serde_json::json!(many),).is_err());
     }
 }

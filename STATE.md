@@ -39,11 +39,24 @@ warm-up max 12.8 ms); unthrottled ceiling ~260–280 fps; idle 0–2 ticks/60 s,
 old "115+ fps not honestly measurable" caveat is resolved at the mock level
 (real scanout stays on the real-machine checklist).
 
-**Next: Step 1 Tier 1 finish** (1.9 notifications daemon, 1.11 tray,
-1.2 MPRIS feed, niri actions) → TIER-1B delivery → Tier 2 in the stated
-order → TIER-2 → Tier 3 → TIER-3 → Tier 4 → FINAL. Checkpoints lean;
-CKPT_FULL=1 only at FINAL. gh-sync runs from checkpoint.sh after every
-checkpoint AND directly every ~10 min of work (Amendment 3 cadence).
+**Step 1 / Tier 1.9 DONE (notification daemon):** zbus
+org.freedesktop.Notifications server on its own thread (D4 pattern, bus
+absence non-fatal), toast surface (360px top-right Overlay, ≤3 cards),
+legacy expiry rules, replace-by-id, transient drop, history cap 200,
+DND (dndUntil) + muted apps (notificationMutedApps — validators added to
+the frozen prefs contract mirroring desktop_backend.py, D20), bell unread
+badge + markRead-on-open, NotificationClosed/ActionInvoked signals,
+msg notify/dnd/notifications IPC. e2e on a REAL private session bus:
+name ownership, GetServerInformation, busctl Notify → toast golden →
+expiry → history → NotificationClosed observed by dbus-monitor; DND
+suppression test; local-notification test. e2e suite now 18. History
+persistence deferred (backend notificationSave not in the frozen Rust
+backend — Tier-2 catch-up).
+
+**Next: Tier 1.11 tray** (StatusNotifierWatcher + DBusMenu — largest
+remaining Tier 1 item), then 1.2 remainder (MPRIS media feed, resource
+probes) → TIER-1B delivery → Tier 2. Checkpoints lean; CKPT_FULL=1 only
+at FINAL. gh-sync every ~10 min of work (Amendment 3 cadence).
 
 TIER-1 (previous session) was SENT: lme-shell-src-TIER-1-20261011.zip,
 commit 6169ddc, replayed clean. Coverage at delivery: done=34 partial=1

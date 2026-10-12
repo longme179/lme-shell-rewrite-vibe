@@ -157,3 +157,19 @@ launches an injected app; the launcher golden uses a timed topmost capture
 with an anti-empty sanity check. Lesson recorded: a golden must prove its
 subject rendered, and an e2e assertion written to match observed behavior
 deserves suspicion when the behavior is "nothing happened".
+
+## D20 — Notification daemon shape (Tier 1.9)
+Ported from legacy qml/services/Notifications.qml + shell.qml's toast
+column. Choices: the zbus object server runs on a dedicated blocking
+connection/thread (the D4 pattern), Notify/CloseNotification cross to the
+calloop loop via a channel, signals (NotificationClosed, ActionInvoked) are
+emitted raw via conn.emit_signal from an emitter thread that owns the
+connection — dropping Shell.dbus_cmd releases the bus name cleanly. A
+missing session bus is non-fatal (local notifications still work). History
+is in-memory only: legacy persists via the backend notificationSave which
+the frozen Rust backend does not implement — persistence deferred to the
+Tier-2 backend catch-up. dndUntil + notificationMutedApps validation was
+ADDED to the frozen prefs contract, mirroring desktop_backend.py exactly
+(including write-time dedupe of muted apps); this is additive and does not
+change any existing key. Toast body is a single truncated line for now —
+the toolkit has no multi-line wrap yet (Tier-2 polish with the center).

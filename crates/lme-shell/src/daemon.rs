@@ -24,16 +24,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Animator track for a panel reveal animation (window id offset).
 pub const REVEAL_TRACK: u64 = 0x900_000;
 
-/// Notification state (hub only in this build; the D-Bus server that feeds
-/// it is Tier 2 — see NATIVE_PLAN 1.9 and README coverage).
-#[derive(Default)]
-#[allow(dead_code)]
-pub struct NotificationHub {
-    pub dnd: bool,
-    pub unread: usize,
-    pub history: Vec<String>,
-}
-
 pub struct Shell {
     pub theme: Theme,
     pub settings: SettingsService,
@@ -48,8 +38,16 @@ pub struct Shell {
     pub media_title: Option<String>,
     pub tray_items: usize,
     pub power: Box<dyn PowerExecutor>,
-    #[allow(dead_code)]
-    pub notifications: NotificationHub,
+    /// Notification hub (Tier 1.9): live toasts + history + unread.
+    pub notifications: crate::notifications::NotificationHub,
+    /// lme-notifications toast window (Overlay, top-right).
+    pub toasts: Option<u64>,
+    /// Sender for D-Bus signal emission (None when the session bus is
+    /// unavailable — external notifications disabled, local ones still work).
+    pub dbus_cmd: Option<std::sync::mpsc::Sender<crate::notifications::DbusCommand>>,
+    /// id counter for local (msg notify) notifications — far from the D-Bus
+    /// counter so the ranges never collide.
+    pub next_local_id: u32,
     pub bars: HashMap<String, u64>,
     pub launcher: Option<u64>,
     pub power_menu: Option<u64>,
@@ -92,7 +90,10 @@ impl Shell {
                 };
                 executor
             },
-            notifications: NotificationHub::default(),
+            notifications: crate::notifications::NotificationHub::default(),
+            toasts: None,
+            dbus_cmd: None,
+            next_local_id: 0x4000_0000,
             bars: HashMap::new(),
             launcher: None,
             power_menu: None,
@@ -332,6 +333,10 @@ pub fn with_shell<R>(state: &mut UiState, f: impl FnOnce(&mut Shell, &mut UiStat
 
 impl Shell {
     fn handle_click(&mut self, state: &mut UiState, window_id: u64, id: u64) {
+        // toast interactions (dismiss ×, action pills)
+        if self.handle_toast_click(state, id) {
+            return;
+        }
         // power menu buttons
         if self.power_menu == Some(window_id) {
             match id {
@@ -377,7 +382,12 @@ impl Shell {
             bar::ids::OVERVIEW => {
                 let _ = crate::spawn_detached(&["niri", "msg", "action", "toggle-overview"]);
             }
-            bar::ids::NOTIFICATIONS => self.toggle_panel(state, "notifications"),
+            bar::ids::NOTIFICATIONS => {
+                // opening the (Tier-2) center also marks them read (legacy
+                // markRead-on-open); for now the center is a notice
+                self.toggle_panel(state, "notifications");
+                self.mark_notifications_read(state);
+            }
             bar::ids::SETTINGS => {
                 let _ = crate::spawn_detached(&["lme-shell", "settings"]);
             }
@@ -816,6 +826,40 @@ impl Shell {
                 self.show_osd(state, label, value);
                 Reply::ok("osd shown")
             }
+            Command::Notify { summary, body } => {
+                self.local_notification(state, summary, body);
+                Reply::ok("notified")
+            }
+            Command::Dnd { minutes } => {
+                let until: i64 = if minutes < 0 {
+                    -1
+                } else if minutes == 0 {
+                    0
+                } else {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64 + minutes * 60_000)
+                        .unwrap_or(minutes)
+                };
+                match self.settings.set("dndUntil", Value::from(until)) {
+                    Ok(()) => Reply::ok(format!("dnd until {until}")),
+                    Err(e) => Reply {
+                        ok: false,
+                        message: e,
+                        detail: None,
+                    },
+                }
+            }
+            Command::Notifications => Reply {
+                ok: true,
+                message: format!(
+                    "{} live, {} history, {} unread",
+                    self.notifications.live.len(),
+                    self.notifications.history.len(),
+                    self.notifications.unread
+                ),
+                detail: Some(crate::notifications::history_json(&self.notifications)),
+            },
             Command::StatusMessage { message } => {
                 self.show_osd(state, message, -1.0);
                 Reply::ok("status shown")
@@ -923,6 +967,32 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
     }) {
         eprintln!("lme-shell: ipc channel: {e:?}");
         return std::process::ExitCode::FAILURE;
+    }
+
+    // ---- notification D-Bus server (Tier 1.9) ----
+    // Non-fatal when the session bus is absent (D4): the shell then runs
+    // with local notifications only (msg notify).
+    {
+        let (ntx, nchannel) = calloop::channel::channel::<crate::notifications::DbusEvent>();
+        match crate::notifications::spawn(ntx) {
+            Ok(_dbus) => {
+                crate::daemon::with_shell(&mut state, |shell, _| {
+                    shell.dbus_cmd = Some(_dbus.cmd_tx);
+                });
+                if let Err(e) = handle.insert_source(nchannel, |event, _, state| {
+                    if let calloop::channel::Event::Msg(ev) = event {
+                        crate::daemon::with_shell(state, |shell, state| {
+                            shell.notification_event(state, ev);
+                        });
+                    }
+                }) {
+                    eprintln!("lme-shell: notification channel: {e:?}");
+                }
+            }
+            Err(e) => {
+                eprintln!("lme-shell: notifications: session bus unavailable ({e})");
+            }
+        }
     }
 
     // ---- settings/palette hot reload (inotify) ----
