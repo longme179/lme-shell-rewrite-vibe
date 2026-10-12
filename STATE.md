@@ -134,6 +134,17 @@ made (mock pacing insufficient) — flagged real-machine.
 - Label TIER-1, commit 6169ddc, 2026-10-11. Zip 1 part (well under the 7 MB
   split threshold). NATIVE_PLAN counts at delivery: done=34 partial=1
   missing=17 external=2.
+- Label **TIER-1B, commit ae0d04d, 2026-10-12.** Zip 1 part + README +
+  summary + Amendment-2 addendum (backup repo URL + branch + hash) sent.
+  Coverage at delivery: done=36 partial=1 missing=16 external=2. New since
+  TIER-1: Step 0a pointer pass + D19 launcher fix, Step 0b vsync perf
+  (60/120 fps reveal, 0 late/dropped), Tier 1.9 notification daemon, e2e
+  suite 7 → 18 (incl. real private-bus D-Bus tests). Deliberate deviation
+  from the continuation-prompt order (1.11 tray + 1.2 MPRIS were listed
+  before TIER-1B): session budget favored locking in the verified feature
+  set; tray + MPRIS are the next session's first items (recorded in
+  DECISIONS D21). Replay: export build+test clean via the chunked-prewarm
+  replay dir (LME_REPLAY_TARGET, sandbox lesson).
 - Export excludes legacy/, docs/previews/, assets/wallpapers/ (EXPORT_NOTES
   inside the zip says so); docs/screens/ kept (3 PNGs).
 - Backend parity tests that need the legacy reference tree skip cleanly in
@@ -141,16 +152,16 @@ made (mock pacing insufficient) — flagged real-machine.
 
 ## Next actions (for the next session, in priority order)
 
-1. Tier 1.9: notification daemon — zbus `org.freedesktop.Notifications`
-   server (#[zbus::interface]) + toast surface + history + DND; wire the bar
-   bell module. zbus 5.19 already builds in the workspace.
-2. Tier 1.11: tray — StatusNotifierWatcher + DBusMenu (largest remaining
-   Tier 1 item; real-machine validation required).
-3. Tier 1.2 remainder: MPRIS (media module), probes for resources module.
-4. Tier 0.9: fractional-scale-v1 + viewporter (extend the mock with the
+1. Tier 1.11: tray — StatusNotifierWatcher + DBusMenu (largest remaining
+   Tier 1 item; real-machine validation required). Reuse the
+   notifications.rs threading pattern (D4/D20).
+2. Tier 1.2 remainder: MPRIS (media module), probes for resources module.
+3. Tier 0.9: fractional-scale-v1 + viewporter (extend the mock with the
    globals to test headlessly).
-5. Tier 2 in order: control center, audio/brightness actions (lme-backend
+4. Tier 2 in order: control center, audio/brightness actions (lme-backend
    probes exist), clipboard UI, weather UI, agenda, activity island.
+5. Notification history persistence + notification center panel (Tier 2,
+   needs the backend notificationSave catch-up — D20).
 6. lme-backend catch-up port of the upstream feature wave (the 4 ignored
    goldens) — owner decision pending (Phase-1.5 scale).
 

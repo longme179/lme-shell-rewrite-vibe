@@ -173,3 +173,13 @@ ADDED to the frozen prefs contract, mirroring desktop_backend.py exactly
 (including write-time dedupe of muted apps); this is additive and does not
 change any existing key. Toast body is a single truncated line for now —
 the toolkit has no multi-line wrap yet (Tier-2 polish with the center).
+
+## D21 — TIER-1B delivered before tray/MPRIS (order deviation)
+The continuation prompt ordered Step 1 (1.9, 1.11 tray, 1.2 MPRIS) before
+the TIER-1B delivery. After 1.9 the session budget was better spent
+locking in the large verified feature set (pointer pass, D19 fix, Step 0b
+measurements, notification daemon — e2e 7 → 18) than risking a half-done
+tray with no delivery at all. Tray (1.11) and the MPRIS/resources feeds
+(1.2 remainder) are recorded as the next session's first items; the
+coverage table in the delivered README/NATIVE_PLAN states them as
+missing, so the delivery is honest about the gap.
