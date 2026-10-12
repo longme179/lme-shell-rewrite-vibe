@@ -1535,6 +1535,58 @@ fn control_center_opens_and_matches_golden() {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2.2: volume action pipeline — a click on the control center's
+// volume slider runs the debounced flush (legacy pendingVolume + 100 ms),
+// logs the dry-run intent, shows the OSD and updates the snapshot.
+// Slider window coords locked by control_center::volume_slider_position_is_stable.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_volume_slider_flushes_action() {
+    let harness = spawn_harness_full(
+        "ctrl-vol",
+        "1280x800",
+        None,
+        None,
+        // panel spans x 666..1266; volume slider track 702..1230 at y 450;
+        // a click at x=1100 -> ~76%
+        Some("motion:1100,450@1500;click@1600"),
+        false,
+        None,
+        &[],
+        None,
+        None,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "control"]);
+    assert!(
+        harness.wait_log("created (lme-control)", Duration::from_secs(10)),
+        "control center never opened"
+    );
+    // wait past the click + the 100 ms debounce
+    let shell_log = harness.tmp.join("shell.log");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&shell_log) {
+            if let Some(found) = text.lines().find(|l| l.contains("dry-run: volume")) {
+                line = found.to_string();
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        line.contains("wpctl"),
+        "volume flush must log the dry-run intent, got: {line:?}"
+    );
+    assert!(
+        harness.wait_log("created (lme-osd)", Duration::from_secs(10)),
+        "volume slide must show the OSD"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Amendment 5 (hygiene 4): the daemon must SURVIVE a world without inotify
 // (an EMFILE at inotify_init used to kill it at startup) and keep hot reload
 // working through the 5 s mtime poll. This test forces the poll path via

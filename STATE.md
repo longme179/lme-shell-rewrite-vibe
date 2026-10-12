@@ -72,11 +72,18 @@ bar/osd/control goldens regenerated with real fake data. 152 passed + 4
 ignored. KI-3 records the missing Flickable (content overflow on short
 outputs).
 
-**Next: Tier 2.2 (audio/brightness actions — lme-backend probes exist),
-then 2.3 BlueZ, 2.4 NetworkManager -> TIER-2A delivery (zip + README +
-summary via webhook). Fake D-Bus service + private-bus e2e + golden per
-module (tray/MPRIS method); inspect goldens with the image-viewing skill
-before each delivery.**
+**Tier 2.2 audio/brightness DONE**: ControlActions executor (wpctl
+volume/mute + brightnessctl, same argv as the frozen backend actions,
+dry-run logs the intent — the e2e asserts the log line), slider flushes
+debounced 100 ms (legacy pendingVolume pattern, schedule_slider_flush),
+optimistic snapshot updates keep bar+panel live, mute button wired.
+e2e control_volume_slider_flushes_action (click at the VLM/unit-locked
+slider coords -> dry-run line + OSD). 24 e2e green, clippy clean.
+
+**Next: Tier 2.3 BlueZ, 2.4 NetworkManager -> TIER-2A delivery (zip +
+README + summary via webhook). Fake D-Bus service + private-bus e2e +
+golden per module (tray/MPRIS method); inspect goldens with the
+image-viewing skill before each delivery.**
 
 Previous session (Amendment 4: robustness + registry + D25):
 

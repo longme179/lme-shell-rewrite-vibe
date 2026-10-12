@@ -864,4 +864,43 @@ mod tests {
             "controls content must not render on a placeholder tab"
         );
     }
+
+    /// Locates the volume slider (window coordinates for the e2e pointer
+    /// spec; SlidePanelRight puts the panel at x=1280-600-14, y=10).
+    #[test]
+    fn volume_slider_position_is_stable() {
+        let mut kit = Kit::new();
+        let mut panel = ControlCenterPanel::new(&kit.theme, &data(), 0);
+        kit.layout(&mut panel);
+        let mut found: Option<(f32, f32)> = None;
+        let mut y = 4.0;
+        while y < 736.0 && found.is_none() {
+            let mut x = 4.0;
+            while x < PANEL_W - 4.0 {
+                let p = Point::new(x, y);
+                let before = kit.queue.len();
+                let mut c = kit.ctx();
+                panel.deliver(&mut c, &InputEvent::down(p), None);
+                panel.deliver(&mut c, &InputEvent::up(p), None);
+                if kit.queue[before..]
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::Slide(id, _) if *id == ids::VOL_SLIDER))
+                {
+                    found = Some((x, y + 12.0)); // center of the 24px track
+                    break;
+                }
+                x += 2.0;
+            }
+            y += 2.0;
+        }
+        let Some((x, y)) = found else {
+            panic!("volume slider never hit by the scan")
+        };
+        // lock the layout: slider sits in the sliders card, mid-panel
+        assert!(
+            y > 300.0 && y < 620.0,
+            "volume slider moved: ({x},{y}) — update the e2e pointer spec"
+        );
+        eprintln!("E2E_SLIDER_PANEL_POS={x},{y}");
+    }
 }

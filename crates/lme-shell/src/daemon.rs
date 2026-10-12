@@ -76,6 +76,12 @@ pub struct Shell {
     pub control: Option<u64>,
     /// Selected control center tab (legacy ShellState.controlTab).
     pub control_tab: usize,
+    /// Hardware actions executor (Tier 2.2; dry-run under --dry-run).
+    pub actions: ControlActions,
+    /// Debounced slider values (legacy pendingVolume/pendingBrightness,
+    /// flushed 100 ms after the last move).
+    pub pending_volume: Option<i64>,
+    pub pending_brightness: Option<i64>,
     pub osd: Option<(u64, Instant)>,
     /// Dry-run volume preview shown by the audio-pill wheel (finding e);
     /// re-seeded from the system snapshot when the preview goes stale.
@@ -136,6 +142,9 @@ impl Shell {
             power_menu: None,
             control: None,
             control_tab: 0,
+            actions: ControlActions { dry_run },
+            pending_volume: None,
+            pending_brightness: None,
             osd: None,
             volume_preview: 0.0,
             volume_preview_at: None,
@@ -356,13 +365,21 @@ impl AppHandler for Shell {
                 }
             }
             UiEvent::Slide(crate::control_center::ids::VOL_SLIDER, value) => {
-                // dry-run preview, same as the bar pill wheel (actions 2.2)
+                // Tier 2.2: debounced flush (legacy pendingVolume + 100 ms)
                 self.volume_preview = value.clamp(0.0, 100.0);
                 self.volume_preview_at = Some(Instant::now());
+                self.pending_volume = Some(value.round() as i64);
                 self.show_osd(state, format!("Volume {}%", value.round() as i64), value);
+                schedule_slider_flush(state, "volume");
             }
-            UiEvent::Slide(crate::control_center::ids::BRIGHT_SLIDER, _) => {
-                self.show_osd(state, "Brightness control lands with Tier 2.2", -1.0);
+            UiEvent::Slide(crate::control_center::ids::BRIGHT_SLIDER, value) => {
+                self.pending_brightness = Some((value.round() as i64).max(1));
+                self.show_osd(
+                    state,
+                    format!("Brightness {}%", value.round() as i64),
+                    value,
+                );
+                schedule_slider_flush(state, "brightness");
             }
             UiEvent::Submit(_, _) | UiEvent::Slide(_, _) | UiEvent::Toggle(_, _) => {}
             UiEvent::Focus(_) => {}
@@ -744,16 +761,19 @@ impl Shell {
             cc::TILE_BLUETOOTH => {
                 self.show_osd(state, "Bluetooth controls land with Tier 2.3", -1.0)
             }
-            cc::VOL_MUTE | cc::BRIGHT_SLIDER => self.show_osd(
-                state,
-                "Audio, brightness and power-profile actions land with Tier 2.2/2.5",
-                -1.0,
-            ),
-            id if (cc::PROFILE_BASE..cc::PROFILE_BASE + 3).contains(&id) => self.show_osd(
-                state,
-                "Audio, brightness and power-profile actions land with Tier 2.2/2.5",
-                -1.0,
-            ),
+            cc::VOL_MUTE => {
+                // Tier 2.2: wpctl mute toggle + optimistic snapshot flip
+                self.actions.mute();
+                if let Some(audio) = self.system_snapshot.get_mut("audio") {
+                    let muted = audio.get("muted").and_then(Value::as_bool).unwrap_or(false);
+                    audio["muted"] = Value::from(!muted);
+                }
+                self.rebuild_bars(state);
+                self.refresh_control_center(state);
+            }
+            id if (cc::PROFILE_BASE..cc::PROFILE_BASE + 3).contains(&id) => {
+                self.show_osd(state, "Power-profile switching lands with Tier 2.5", -1.0)
+            }
             cc::MEDIA_PREV | cc::MEDIA_PLAY | cc::MEDIA_NEXT => self.show_osd(
                 state,
                 "Media transport controls land with the activity island (Tier 2.9)",
@@ -1533,6 +1553,60 @@ pub fn run(dry_run: bool) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+/// Control-center hardware actions (Tier 2.2): volume/mute via wpctl,
+/// brightness via brightnessctl — same commands as lme-backend actions
+/// (frozen contract), executed directly by the daemon (the backend
+/// `perform` path would pull the whole DesktopBackend). Dry-run logs the
+/// intent instead of spawning (the e2e asserts the log line).
+pub struct ControlActions {
+    pub dry_run: bool,
+}
+
+impl ControlActions {
+    fn run(&self, label: &str, argv: &[&str]) {
+        if self.dry_run {
+            eprintln!("lme-shell: dry-run: {label} [{}]", argv.join(" "));
+            return;
+        }
+        if let Err(e) = crate::power::spawn_detached(argv) {
+            eprintln!("lme-shell: control: {label}: {e}");
+        }
+    }
+
+    pub fn volume(&self, value: i64) {
+        self.run(
+            &format!("volume {value}%"),
+            &[
+                "wpctl",
+                "set-volume",
+                "--limit",
+                "1.0",
+                "@DEFAULT_AUDIO_SINK@",
+                &format!("{value}%"),
+            ],
+        );
+    }
+
+    pub fn mute(&self) {
+        self.run(
+            "mute toggle",
+            &["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+        );
+    }
+
+    pub fn brightness(&self, value: i64) {
+        self.run(
+            &format!("brightness {value}%"),
+            &[
+                "brightnessctl",
+                "--class=backlight",
+                "set",
+                &format!("{value}%"),
+            ],
+        );
+    }
+}
+
 /// Apply a settings/palette reload (shared by the inotify watcher and the
 /// 5 s mtime poll fallback — Amendment 5, hygiene 4).
 fn apply_config_reload(state: &mut UiState) {
@@ -1616,6 +1690,58 @@ pub fn schedule_osd_expiry(state: &mut UiState) {
         if let Some(id) = osd_id {
             state.close_window(id);
         }
+        calloop::timer::TimeoutAction::Drop
+    });
+}
+
+/// Flush a debounced slider value 100 ms after the last move (legacy
+/// volumeDelay/brightnessDelay timers; Tier 2.2).
+pub fn schedule_slider_flush(state: &mut UiState, which: &'static str) {
+    let Some(handle) = state.handle.clone() else {
+        return;
+    };
+    let timer = calloop::timer::Timer::from_duration(Duration::from_millis(100));
+    let _ = handle.insert_source(timer, move |_, _, state| {
+        crate::daemon::with_shell(state, |shell, state| match which {
+            "volume" => {
+                if let Some(v) = shell.pending_volume.take() {
+                    shell.actions.volume(v);
+                    // optimistic snapshot update (the real probe is a
+                    // deferred backend catch-up; keeps bar+panel live)
+                    if let Some(audio) = shell
+                        .system_snapshot
+                        .entry("audio".to_string())
+                        .or_insert_with(|| serde_json::json!({"available": true}))
+                        .as_object_mut()
+                    {
+                        audio.insert("volume".into(), Value::from(v));
+                        audio.insert("muted".into(), Value::from(false));
+                    }
+                    shell.rebuild_bars(state);
+                    if shell.control.is_some() {
+                        shell.refresh_control_center(state);
+                    }
+                }
+            }
+            _ => {
+                if let Some(v) = shell.pending_brightness.take() {
+                    shell.actions.brightness(v);
+                    if let Some(bright) = shell
+                        .system_snapshot
+                        .entry("brightness".to_string())
+                        .or_insert_with(|| serde_json::json!({}))
+                        .as_object_mut()
+                    {
+                        bright.insert("available".into(), Value::from(true));
+                        bright.insert("percent".into(), Value::from(v));
+                    }
+                    shell.rebuild_bars(state);
+                    if shell.control.is_some() {
+                        shell.refresh_control_center(state);
+                    }
+                }
+            }
+        });
         calloop::timer::TimeoutAction::Drop
     });
 }
