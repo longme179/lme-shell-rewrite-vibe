@@ -9,58 +9,37 @@ documents remain as history.
 
 ## Current step
 
-**Session 2026-10-13 (Tier 1 COMPLETE: 1.11 tray + 1.2 MPRIS/resources).** Sandbox
-survived between chats; branch was at 99bda82 with the Step-0a mock-pointer
-edits half-applied (a multi-edit died mid-way: State/dispatch edits landed,
-main() had not). Per Amendment 3: gh-sync ran FIRST (pushed 99bda82 +
-wip snapshot), then main() was completed (pointer script parsing with ';'
-separator, --capture-at, State init, tick(&dh), SUMMARY with delivered fps /
-late / dropped / pointer_events, seat v8 for axis_value120) and committed.
+**Session 2026-10-13 (Amendment 4): robustness + registry + D25.** Read
+docs/MISSION_AMENDMENT_4.md (work order), docs/RESUME.md (fresh-sandbox
+bootstrap), docs/ZBUS_NOTES.md (before any D-Bus work). This session:
 
-**Step 0a DONE (findings a–e, commits 333add4..HEAD):** mock pointer
-injection + wheel/touchpad/stop axis forms; client scroll semantics fixed
-(value120 notches, 50px touchpad lines, stop reset); bar audio/network/
-battery are hover+click pills (control/wifi notices); launcher hover +
-click-to-launch + wheel; CenteredPanel coordinate fix + outside-click
-dismiss; NEW wheel behavior (workspaces focus up/down, dry-run volume OSD)
-documented in README; e2e suite 7 → 15 tests (pointer + typed-launch +
-deterministic app injection via XDG_DATA_DIRS isolation + timed topmost
-captures). **D19: found + fixed that launcher results were never populated
-on open/typing** (old golden was vacuously empty). Goldens regenerated
-deliberately (bar pill visuals, real launcher content, 4 new).
+1. Mission docs saved (AMENDMENT_3 reconstructed, AMENDMENT_4, RESUME.md).
+2. deliver.sh: 7 resumable stages + state markers, release-only replay in
+   ONE dedicated target dir (deleted right after pass), >=3GB abort,
+   --clean. Verified: timeout-kill mid-replay -> re-run resumes -> scanzip
+   green. golden.rs spawns bins/examples from the CURRENT profile dir, so
+   `cargo test --release --locked` works (137 green in release too).
+3. click_ids.rs id registry (Amendment 4 lesson b): named non-overlapping
+   ranges + unit tests (no-overlap, constants-in-range); daemon routing
+   registry-bounded (power/launcher/bar/tray/toast/workspace).
+4. **D25** (the session's big fight, full ladder in docs/DECISIONS.md):
+   the MPRIS e2e flaked 40-60% — zbus 5.19 wakeup loss in the full-daemon
+   context. mpris.rs rewritten single-threaded async (one block_on, custom
+   Feeds stream) + self-healing reconcile tick (1s empty / 5s live) +
+   3s per-call timeouts; dbus_util helpers (no_cache_proxy,
+   drive_executor_forever) applied to notifications/tray; debug knobs
+   (LME_SHELL_NO_NOTIF/TRAY, LME_MPRIS_DEBUG, examples/mpris_probe.rs).
+   12/12 standalone e2e + 134 full suite green, fmt+clippy clean.
+   Sandbox lesson: ~180 zombie test processes exhausted the 128-instance
+   inotify budget -> daemon EMFILE deaths (kill stale test procs when
+   e2e's fail fast with "inotify: Too many open files").
 
-**Step 0b DONE (vsync-paced measurements, commit after 69f34e5):** mock
-FRAME-per-callback logging; bench section 3 rewritten for the vsync grid
-(MOCK_MODE/MOCK_FPS). Results (release, cloud CPU): reveal delivers
-**60.0 fps at a 60 Hz grid and 120.0 fps at a 120 Hz grid, 0 late,
-0 dropped**; render median 2.1 ms, p95 3.1 ms, p99 6.6 ms (first-frame
-warm-up max 12.8 ms); unthrottled ceiling ~260–280 fps; idle 0–2 ticks/60 s,
-9 wakeups, 11.9 MB RSS, 9–12 ms cold start. PERF.md + README updated — the
-old "115+ fps not honestly measurable" caveat is resolved at the mock level
-(real scanout stays on the real-machine checklist).
-
-**Step 1 / Tier 1.9 DONE (notification daemon):** zbus
-org.freedesktop.Notifications server on its own thread (D4 pattern, bus
-absence non-fatal), toast surface (360px top-right Overlay, ≤3 cards),
-legacy expiry rules, replace-by-id, transient drop, history cap 200,
-DND (dndUntil) + muted apps (notificationMutedApps — validators added to
-the frozen prefs contract mirroring desktop_backend.py, D20), bell unread
-badge + markRead-on-open, NotificationClosed/ActionInvoked signals,
-msg notify/dnd/notifications IPC. e2e on a REAL private session bus:
-name ownership, GetServerInformation, busctl Notify → toast golden →
-expiry → history → NotificationClosed observed by dbus-monitor; DND
-suppression test; local-notification test. e2e suite now 18. History
-persistence deferred (backend notificationSave not in the frozen Rust
-backend — Tier-2 catch-up).
-
-**Next: Tier 1.11 tray** (StatusNotifierWatcher + DBusMenu — largest
-remaining Tier 1 item), then 1.2 remainder (MPRIS media feed, resource
-probes) → TIER-1B delivery → Tier 2. Checkpoints lean; CKPT_FULL=1 only
-at FINAL. gh-sync every ~10 min of work (Amendment 3 cadence).
-
-TIER-1 (previous session) was SENT: lme-shell-src-TIER-1-20261011.zip,
-commit 6169ddc, replayed clean. Coverage at delivery: done=34 partial=1
-missing=17 external=2 (docs/NATIVE_PLAN.md is the live table).
+**Next: Tier 0.9 fractional-scale (time-boxed; see AMENDMENT_4 plan: bind
+wp_fractional_scale_manager_v1 + wp_viewporter via wayland-protocols
+staging, mock --scale flag, goldens 1.0/1.25 <=200KB), then Tier 2 in
+order (control center shell + Controls tab first; TIER-2A delivery after
+control center + audio + brightness + network + Bluetooth). Idle polls
+register lives in docs/PERF.md; re-measure idle at every tier end.**
 
 ## Done (this session, branch rewrite/native)
 
