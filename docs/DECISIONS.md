@@ -205,3 +205,19 @@ phantom notification dismiss and never reached the tray handler. Found
 by the new tray e2e (unit tests can't see the daemon-level routing);
 fixed by bounding the toast range to [0x7000, 0x7100). Lesson recorded:
 id-space owners must claim CLOSED ranges (base..next_base).
+
+
+## D24 — receive_all_signals filters on the proxy's interface
+zbus 5's `Proxy::receive_all_signals` subscribes with a match rule that
+includes the proxy's OWN interface — "all signals" means all MEMBERS of
+that interface, not all interfaces at the destination/path. Both the
+MPRIS player listener and the tray item listener were built on it, so
+`org.freedesktop.DBus.Properties.PropertiesChanged` — the property-based
+update form real apps emit — never arrived (only SNI New* worked; MPRIS
+has no New* form at all, so its refresh path was entirely dead). Fix:
+subscribe PropertiesChanged on an `org.freedesktop.DBus.Properties`
+proxy at the same destination/path, as a second listener thread (they
+share the alive flag). Caught by the MPRIS e2e's busctl-driven Next
+call; the tray e2e never caught it because register/unregister ride
+NameOwnerChanged. Lesson: per-interface proxies need per-interface
+subscriptions.

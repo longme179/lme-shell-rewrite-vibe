@@ -56,7 +56,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 | # | Feature | Target module | Test | Status |
 |---|---|---|---|---|
 | 1.1 | Per-output bar: 3 zones, barLayout, connected pill, margins/height/font-size | lme-shell/bar.rs | golden | done |
-| 1.2 | Bar modules (15) | lme-shell/bar.rs | golden | partial — clock (minute timer), workspaces (niri state + event stream), windowTitle, launcher/overview/notifications/settings/clipboard buttons, battery (sysfs 30 s), network/audio (fake-state data; no live probes), tray (hidden, no items) are rendered; **media/resources/activity have no live feed (MPRIS/probes not wired) and stay hidden** |
+| 1.2 | Bar modules (15) | lme-shell/bar.rs, mpris.rs | golden + e2e (real D-Bus) | done — clock (minute timer), workspaces (niri state + event stream), windowTitle, launcher/overview/notifications/settings/clipboard buttons, battery (sysfs), network/audio (fake-state data; live nmcli/wpctl feeds are a backend catch-up), tray (live StatusNotifier items), media (live MPRIS: playing player || first, trackTitle || identity, PropertiesChanged refresh, gone on owner loss), resources (live /proc CPU% + RAM% every 5 s, first sample null until the delta forms) all render with real feeds where the sandbox can prove them; activity island button renders (the island itself is Tier 2.9). Found + fixed D24 (receive_all_signals interface filter hid every PropertiesChanged) |
 | 1.3 | Launcher apps mode: desktop scan, fuzzy ranking, favorites | lme-shell/launcher_data.rs | unit + e2e | done (ranking ported 1:1 from LauncherSearch.js; favorites read from settings; favorites-toggle UI not built) |
 | 1.4 | Launcher `=` calculator mode | launcher_data.rs | unit | done (local evaluator, D13) |
 | 1.5 | Launcher `:` emoji mode | launcher_data.rs + panels.rs | unit | done (copy via wl-copy spawn) |
@@ -109,7 +109,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 ## Session summary (this delivery)
 
 - Tier 0 complete (0.9 fractional-scale excepted, documented above).
-- Tier 1: 1.1–1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14 done; 1.2 partial (MPRIS + resource probes left).
+- Tier 1: **complete** (1.1–1.14); Tier 0.9 fractional-scale still open.
 - Tiers 2–3: only backend-frozen parts done (2.11 external, 2.12 backend);
   the rest missing. Tier 4 done for what exists.
 - Gates at every commit: `cargo fmt`, `cargo clippy -D warnings`,

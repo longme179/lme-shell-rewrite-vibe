@@ -19,7 +19,7 @@ with this yet.
 |---|---|---|---|
 | Daemon + `lme-shell msg` IPC (toggle/close/refresh/status/osd/notify/dnd/notifications/tray/power) | done | e2e vs mock compositor + unit | no |
 | Per-output bar: 3 zones from `barLayout`, connected pill, margins/height/font size | done | golden PNG (docs/screens/bar.png) | no |
-| Bar modules: clock (minute-boundary), workspaces, window title, launcher/overview/notifications/settings/clipboard buttons, battery, network, audio | done (data via sysfs + niri IPC; network/audio show real values only when the backend feeds them) | golden + e2e | niri stream, nmcli/wpctl feeds |
+| Bar modules: clock (minute-boundary), workspaces, window title, launcher/overview/notifications/settings/clipboard buttons, battery, network, audio, tray (live StatusNotifier items), media (live MPRIS players), resources (live CPU%/RAM% every 5 s) | done (data via sysfs, /proc, niri IPC, session-bus MPRIS; network/audio show real values only when the backend feeds them) | golden + e2e | niri stream, nmcli/wpctl feeds, real players |
 | Pointer input: hover states, click routing, wheel semantics (value120 notches + touchpad pixel accumulation + axis_stop), outside-click panel dismiss, launcher hover/click-to-launch/wheel | done | unit + e2e via mock pointer injection | yes (real seat/touchpad feel) |
 | Bar modules: media, resources, activity island | missing (no MPRIS/probe feed wired) | — | — |
 | Launcher: apps mode with fuzzy ranking (exact port of `LauncherSearch.js`), favorites | done | unit + e2e (typed keys + Enter launch, pointer hover/click/wheel, Esc) | no |
@@ -97,6 +97,7 @@ lme-shell msg toggle power     # power menu
 lme-shell msg close            # close open panels
 lme-shell msg osd Volume 40    # OSD popup
 lme-shell msg tray             # registered tray items (JSON)
+lme-shell msg media            # MPRIS players + the bar pill title (JSON)
 lme-shell msg power suspend    # logind suspend (add --dry-run to the daemon for tests)
 ```
 
