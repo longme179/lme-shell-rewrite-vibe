@@ -17,7 +17,7 @@ with this yet.
 
 | Feature | Status | Tested by | Real-machine needed |
 |---|---|---|---|
-| Daemon + `lme-shell msg` IPC (toggle/close/refresh/status/osd/power) | done | e2e vs mock compositor + unit | no |
+| Daemon + `lme-shell msg` IPC (toggle/close/refresh/status/osd/notify/dnd/notifications/tray/power) | done | e2e vs mock compositor + unit | no |
 | Per-output bar: 3 zones from `barLayout`, connected pill, margins/height/font size | done | golden PNG (docs/screens/bar.png) | no |
 | Bar modules: clock (minute-boundary), workspaces, window title, launcher/overview/notifications/settings/clipboard buttons, battery, network, audio | done (data via sysfs + niri IPC; network/audio show real values only when the backend feeds them) | golden + e2e | niri stream, nmcli/wpctl feeds |
 | Pointer input: hover states, click routing, wheel semantics (value120 notches + touchpad pixel accumulation + axis_stop), outside-click panel dismiss, launcher hover/click-to-launch/wheel | done | unit + e2e via mock pointer injection | yes (real seat/touchpad feel) |
@@ -31,7 +31,8 @@ with this yet.
 | Idle cost: 0–2 CPU ticks / 60 s, 0.15 wakeups/s, 11.9 MB RSS, 9–12 ms cold start | done | bench (docs/PERF.md) | re-measure on laptop |
 | Panel reveal animation: frame-callback driven, render p95 3.1 ms | done | bench (mock vsync-grid: 120.0 fps reveal, 0 late, 0 dropped) | fps at real scanout |
 | Notification daemon: org.freedesktop.Notifications server, toast popups (top-right, ≤3), expiry rules, replace-by-id, DND + muted apps, bell unread badge, history (in-memory) | done (server + toasts e2e'd against a real private D-Bus) | unit + e2e (busctl client, dbus-monitor signal check) | yes (real session bus / real apps) |
-| Notification CENTER panel, system tray, control center, clipboard UI, settings window, Wi-Fi/Bluetooth panels, night light, weather UI, activity island | **missing (Tier 2/3)** | — | — |
+| System tray: org.kde.StatusNotifierWatcher host, live item tracking (pixmaps, tooltips, status), com.canonical.dbusmenu menus (in-panel page), 268px right-anchored panel with hover/click/middle/wheel, `msg tray` | done (watcher + panel e2e'd against a real private D-Bus with a real SNI client, examples/fake_sni) | unit + e2e | yes (real session bus / real tray apps) |
+| Notification CENTER panel, control center, clipboard UI, settings window, Wi-Fi/Bluetooth panels, night light, weather UI, activity island | **missing (Tier 2/3)** | — | — |
 | Backend services (niri IPC, prefs with cross-writer locking, weather, clipboard store, app scan, charging) | done (frozen Phase 0 contract) | 50 golden parity tests vs the Python backend | no |
 
 Full line-by-line status: [`docs/NATIVE_PLAN.md`](docs/NATIVE_PLAN.md).
@@ -95,6 +96,7 @@ lme-shell msg toggle launcher  # open/close the launcher
 lme-shell msg toggle power     # power menu
 lme-shell msg close            # close open panels
 lme-shell msg osd Volume 40    # OSD popup
+lme-shell msg tray             # registered tray items (JSON)
 lme-shell msg power suspend    # logind suspend (add --dry-run to the daemon for tests)
 ```
 

@@ -9,7 +9,7 @@ documents remain as history.
 
 ## Current step
 
-**Session 2026-10-12 (post-reset recovery + TIER-1B in progress).** Sandbox
+**Session 2026-10-13 (tray Tier 1.11 DONE).** Sandbox
 survived between chats; branch was at 99bda82 with the Step-0a mock-pointer
 edits half-applied (a multi-edit died mid-way: State/dispatch edits landed,
 main() had not). Per Amendment 3: gh-sync ran FIRST (pushed 99bda82 +
@@ -63,6 +63,34 @@ commit 6169ddc, replayed clean. Coverage at delivery: done=34 partial=1
 missing=17 external=2 (docs/NATIVE_PLAN.md is the live table).
 
 ## Done (this session, branch rewrite/native)
+
+**Session 2026-10-13 additions (tray):**
+
+7. **Tier 1.11 system tray DONE** (commits 76c5f37, ebc3d4e):
+   StatusNotifierWatcher host + SNI tracking + DBusMenu client + the
+   268px right-anchored panel (port of TrayMenu.qml; D22 deltas:
+   in-panel menu page, right-edge anchor). `msg tray` JSON. Unit tests
+   (9 in tray.rs incl. the widget pointer pass) + e2e
+   `tray_sni_lifecycle` on a private session bus with a REAL SNI client
+   (`examples/fake_sni`, zbus interface server): register → bar button →
+   panel → row Activate → right-click AboutToShow/GetLayout → menu page
+   → entry Event → wheel Scroll → golden panel → kill → NameOwnerChanged
+   removal + auto-close. e2e suite 18 → 19.
+8. **Bugs found by the tray e2e and fixed:**
+   - D23: handle_toast_click's open-ended `id >= 0x7000…` range swallowed
+     the whole tray id space (every tray click died as a phantom
+     notification dismiss) — bounded to [0x7000, 0x7100).
+   - fetch_menu fed the (ia{sv}av) layout member to the whole-reply
+     parser (fields.len() != 2) — every real menu came back
+     "unparsable"; parse_menu_node is the correct entry point.
+   - zbus-5 API drift in the WIP (Value::Variant → Value::Value, header
+     arg by value, Message::header().member(), emit_signal body by ref,
+     Structure::from variant-wraps Value fields — test trees must use
+     StructureBuilder::append_field for the bare wire form).
+   - a{sv} values arrive variant-wrapped: dict_map unwraps (else every
+     dbusmenu prop parsed as empty).
+   - pixmap decode: clamp channels to alpha instead of dropping icons
+     with invalid non-premultiplied data.
 
 1. Docs: ADR 0002, NATIVE_PLAN (full coverage table), DECISIONS D1–D17.
 2. Restructure: legacy/ isolation (qml, python, lifecycle scripts, tests,
@@ -152,18 +180,17 @@ made (mock pacing insufficient) — flagged real-machine.
 
 ## Next actions (for the next session, in priority order)
 
-1. Tier 1.11: tray — StatusNotifierWatcher + DBusMenu (largest remaining
-   Tier 1 item; real-machine validation required). Reuse the
-   notifications.rs threading pattern (D4/D20).
-2. Tier 1.2 remainder: MPRIS (media module), probes for resources module.
-3. Tier 0.9: fractional-scale-v1 + viewporter (extend the mock with the
+1. Tier 1.2 remainder: MPRIS (media module), probes for resources module.
+2. Tier 0.9: fractional-scale-v1 + viewporter (extend the mock with the
    globals to test headlessly).
-4. Tier 2 in order: control center, audio/brightness actions (lme-backend
+3. Tier 2 in order: control center, audio/brightness actions (lme-backend
    probes exist), clipboard UI, weather UI, agenda, activity island.
-5. Notification history persistence + notification center panel (Tier 2,
+4. Notification history persistence + notification center panel (Tier 2,
    needs the backend notificationSave catch-up — D20).
-6. lme-backend catch-up port of the upstream feature wave (the 4 ignored
+5. lme-backend catch-up port of the upstream feature wave (the 4 ignored
    goldens) — owner decision pending (Phase-1.5 scale).
+6. TIER-2 delivery checkpoint when the control center lands (per the
+   tier cadence: zip + README + summary via webhook).
 
 ## Blockers and open questions for the owner
 

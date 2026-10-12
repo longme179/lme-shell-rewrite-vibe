@@ -183,3 +183,25 @@ tray with no delivery at all. Tray (1.11) and the MPRIS/resources feeds
 (1.2 remainder) are recorded as the next session's first items; the
 coverage table in the delivered README/NATIVE_PLAN states them as
 missing, so the delivery is honest about the gap.
+
+## D22 — Tray DBusMenu renders as an in-panel page, not a platform menu
+The legacy QML shell shows item menus via a platform menu component.
+The native toolkit has no floating menu popup primitive yet, and the
+tray panel window already provides a surface with outside-click
+dismiss. The DBusMenu therefore renders as a page INSIDE the tray panel
+window (flat list, submenus indented, back row returns to the item
+list). The panel also anchors at the right edge (output width − 14)
+because the bar module layout does not export the tray button's x to
+the panel layer (legacy computed trayAnchorX for a floating menu —
+unnecessary for an in-panel page). Documented in README; revisit only
+if a real platform-menu use case appears (Tier 2+).
+
+## D23 — Toast click id range was unbounded and swallowed the tray ids
+handle_toast_click treated every widget id ≥ 0x7000_0000_0000 as a
+"dismiss notification" (toast dismiss ids are 0x7000… + u32, action
+ids 0x7400…). The tray id space [0x7100, 0x7400) — added later — fell
+into that open range, so every tray row/menu click was consumed as a
+phantom notification dismiss and never reached the tray handler. Found
+by the new tray e2e (unit tests can't see the daemon-level routing);
+fixed by bounding the toast range to [0x7000, 0x7100). Lesson recorded:
+id-space owners must claim CLOSED ranges (base..next_base).
