@@ -16,16 +16,25 @@ main() had not). Per Amendment 3: gh-sync ran FIRST (pushed 99bda82 +
 wip snapshot), then main() was completed (pointer script parsing with ';'
 separator, --capture-at, State init, tick(&dh), SUMMARY with delivered fps /
 late / dropped / pointer_events, seat v8 for axis_value120) and committed.
-Step-0a work items (Amendment 3 findings a–e) follow, then Step 0b (paced
-fps/p99 report), then the continuation-prompt steps.
 
-**Executing:** Step 0a finish (pointer e2e tests + findings a–e) → Step 0b
-(vsync-paced fps/dropped/p99 report in docs/PERF.md) → Step 1 Tier 1 finish
-(1.9 notifications daemon, 1.11 tray, 1.2 MPRIS feed, niri actions) →
-TIER-1B delivery → Tier 2 in the stated order → TIER-2 → Tier 3 → TIER-3 →
-Tier 4 → FINAL. Checkpoints lean; CKPT_FULL=1 only at FINAL. gh-sync runs
-from checkpoint.sh after every checkpoint AND directly every ~10 min of work
-(Amendment 3 cadence).
+**Step 0a DONE (findings a–e, commits 333add4..HEAD):** mock pointer
+injection + wheel/touchpad/stop axis forms; client scroll semantics fixed
+(value120 notches, 50px touchpad lines, stop reset); bar audio/network/
+battery are hover+click pills (control/wifi notices); launcher hover +
+click-to-launch + wheel; CenteredPanel coordinate fix + outside-click
+dismiss; NEW wheel behavior (workspaces focus up/down, dry-run volume OSD)
+documented in README; e2e suite 7 → 15 tests (pointer + typed-launch +
+deterministic app injection via XDG_DATA_DIRS isolation + timed topmost
+captures). **D19: found + fixed that launcher results were never populated
+on open/typing** (old golden was vacuously empty). Goldens regenerated
+deliberately (bar pill visuals, real launcher content, 4 new).
+
+**Next: Step 0b** (vsync-paced fps/dropped/p99 during a panel reveal →
+docs/PERF.md), then Step 1 Tier 1 finish (1.9 notifications daemon, 1.11
+tray, 1.2 MPRIS feed, niri actions) → TIER-1B delivery → Tier 2 in the
+stated order → TIER-2 → Tier 3 → TIER-3 → Tier 4 → FINAL. Checkpoints lean;
+CKPT_FULL=1 only at FINAL. gh-sync runs from checkpoint.sh after every
+checkpoint AND directly every ~10 min of work (Amendment 3 cadence).
 
 TIER-1 (previous session) was SENT: lme-shell-src-TIER-1-20261011.zip,
 commit 6169ddc, replayed clean. Coverage at delivery: done=34 partial=1

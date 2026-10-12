@@ -277,6 +277,13 @@ impl AppHandler for Shell {
                     self.close_panels(state);
                 }
             }
+            // launcher search field changed: recompute the result list
+            // (the query-change signal the panel emits on every keystroke)
+            UiEvent::Slide(panels::ids::LAUNCHER_INPUT, _) => {
+                if self.launcher == Some(window_id) {
+                    self.refresh_launcher(state);
+                }
+            }
             UiEvent::Submit(_, _) | UiEvent::Slide(_, _) | UiEvent::Toggle(_, _) => {}
             UiEvent::Focus(_) => {}
         }
@@ -635,9 +642,14 @@ impl Shell {
                 track,
             )),
         );
+        // populate the initial result list (empty query = ranked app list);
+        // found by the Step-0a pointer tests — before this the launcher
+        // opened with zero results until an unrelated niri/settings event
+        // happened to fire refresh_launcher
+        self.launcher = Some(id);
+        self.refresh_launcher(state);
         state.set_keyboard_focus(id, Some(ids::LAUNCHER_INPUT));
         self.start_reveal(state, id);
-        self.launcher = Some(id);
     }
 
     fn start_reveal(&mut self, state: &mut UiState, window_id: u64) {

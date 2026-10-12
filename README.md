@@ -20,8 +20,9 @@ with this yet.
 | Daemon + `lme-shell msg` IPC (toggle/close/refresh/status/osd/power) | done | e2e vs mock compositor + unit | no |
 | Per-output bar: 3 zones from `barLayout`, connected pill, margins/height/font size | done | golden PNG (docs/screens/bar.png) | no |
 | Bar modules: clock (minute-boundary), workspaces, window title, launcher/overview/notifications/settings/clipboard buttons, battery, network, audio | done (data via sysfs + niri IPC; network/audio show real values only when the backend feeds them) | golden + e2e | niri stream, nmcli/wpctl feeds |
+| Pointer input: hover states, click routing, wheel semantics (value120 notches + touchpad pixel accumulation + axis_stop), outside-click panel dismiss, launcher hover/click-to-launch/wheel | done | unit + e2e via mock pointer injection | yes (real seat/touchpad feel) |
 | Bar modules: media, resources, activity island | missing (no MPRIS/probe feed wired) | — | — |
-| Launcher: apps mode with fuzzy ranking (exact port of `LauncherSearch.js`), favorites | done | unit + e2e (typed keys, Enter, Esc) | no |
+| Launcher: apps mode with fuzzy ranking (exact port of `LauncherSearch.js`), favorites | done | unit + e2e (typed keys + Enter launch, pointer hover/click/wheel, Esc) | no |
 | Launcher `=` calculator, `:` emoji (assets/emoji.json, copy on Enter), `@` windows | done | unit (calculator/emoji/mode-detect) | focus-window spawn needs niri |
 | Power menu: Lock/Suspend/Log out/Restart/Shut down, confirmations for destructive actions, Esc closes, Overlay+Exclusive on the focused output | done | golden PNG + e2e key injection | yes (visual) |
 | Power actions: logind D-Bus (Suspend/Reboot/PowerOff), `swaylock --color 22212c`, `niri msg action quit --skip-confirmation` | done, dry-run tested | unit (dry-run executor) | **yes — logind/swaylock/niri calls** |
@@ -33,6 +34,22 @@ with this yet.
 | Backend services (niri IPC, prefs with cross-writer locking, weather, clipboard store, app scan, charging) | done (frozen Phase 0 contract) | 50 golden parity tests vs the Python backend | no |
 
 Full line-by-line status: [`docs/NATIVE_PLAN.md`](docs/NATIVE_PLAN.md).
+
+### New behavior (no legacy-QML equivalent — deliberate additions)
+
+These are additions, not ports; each is documented here per the rewrite
+mission's honesty rule:
+
+- **Wheel over the workspaces row** focuses the previous/next workspace
+  (one notch = one workspace, high-resolution half-notches accumulate).
+- **Wheel over the audio pill** previews volume ±5% per notch. Until the
+  Tier-2 audio service exists this is **dry-run**: it only shows the
+  "Volume (dry-run)" OSD and never touches the sink.
+- **Click on the audio / battery pills** answers with a control-center
+  notice and **click on the network pill** with a Wi-Fi panel notice —
+  the real panels are Tier 2.
+- **Click on the dimmed backdrop** dismisses the launcher / power menu
+  (legacy closed panels only via Esc or their close buttons).
 
 ## Architecture
 

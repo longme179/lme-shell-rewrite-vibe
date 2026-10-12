@@ -973,7 +973,7 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for State {
 
 impl Dispatch<wl_buffer::WlBuffer, ()> for State {
     fn request(
-        state: &mut State,
+        _state: &mut State,
         _client: &Client,
         resource: &wl_buffer::WlBuffer,
         _request: wl_buffer::Request,
@@ -981,7 +981,14 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for State {
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, State>,
     ) {
-        state.buffers.remove(&resource.id());
+        // Keep the BufferRec: clients (sctk SlotPool) destroy wl_buffer
+        // objects right after commit and re-wrap the same shm memory in new
+        // ones. The pool fd + offset stay valid, so late timed captures
+        // (--capture-at) can still read the last committed contents. Trade-
+        // off: if the client reuses that pool slot for a different frame,
+        // a very late capture could read reused memory — fine for this
+        // harness (surfaces are idle long before capture time).
+        let _ = &resource;
     }
 }
 

@@ -841,7 +841,6 @@ mod tests {
     const TEST_BUTTON: u64 = 0x7101;
 
     fn centered_with_button() -> CenteredPanel {
-        let theme = Theme::default_with(&Palette::default());
         let mut b = lme_ui::widgets::Button::new(TEST_BUTTON, "Confirm lock");
         b.min_h = 58.0;
         CenteredPanel::new(Box::new(b), 440.0, 430.0, 0)

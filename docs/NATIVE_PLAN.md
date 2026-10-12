@@ -47,7 +47,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 | 0.15 | Widgets: H/VBox, Label, Icon, Button, Switch, Slider, TextInput, VirtualList, FocusScope | lme-ui/widgets | unit | done (Switch/Slider/VirtualList implemented + unit-tested; panels currently use Label/Button/TextInput/FocusScope) |
 | 0.16 | Animation manager (frame-callback driven, bezier curves) | lme-ui/anim.rs | unit + bench | done |
 | 0.17 | `RenderBackend` trait + documented GPU stub seam | lme-ui/render | unit | done |
-| 0.18 | Mock-compositor golden harness + tolerance diff | lme-shell/tests/golden.rs | e2e ×7 | done |
+| 0.18 | Mock-compositor golden harness + tolerance diff | lme-shell/tests/golden.rs | e2e ×15 | done (pointer injection + timed topmost captures added in Step 0a; the old capture-commit mode was replaced for the launcher golden — it had captured an empty pre-frame buffer and passed vacuously, D19) |
 | 0.19 | Delivery pipeline (scripts/deliver.sh) | scripts | TIER-1 delivery | done |
 | 0.20 | Idle budget: ~zero CPU, ≤1 wakeup/s | daemon | bench | done (2 ticks/60 s, 0.15 wakeups/s — see docs/PERF.md) |
 
@@ -68,7 +68,7 @@ Legend: **done** (implemented + tested as described) · **partial**
 | 1.11 | System tray: StatusNotifier + DBusMenu | — | — | missing (bar tray module renders only with items>0; no watcher implemented) |
 | 1.12 | niri workspaces + window title + overview action | lme-shell/niri.rs | unit + e2e (fake state) | done (event-stream refresh wired; workspace FOCUS click path returns a Tier-2 notice — moveWindow/focus actions need the live socket, real-machine) |
 | 1.13 | Clock ticks on minute boundaries | daemon.rs clock chain | bench | done |
-| 1.14 | Pointer interaction pass (Amendment-3 findings a–e) | lme-ui/wayland+widgets, lme-shell/{bar,panels,daemon} | unit + e2e | partial — (a) bar audio/network/battery become hover+click buttons → control/wifi panel notices; (b) launcher list hover highlight + click-to-launch + wheel; (c) CenteredPanel outside-click dismiss + coordinate-space fix (events were translated to panel-local while children live in surface coords) + non-zero-offset regression test; (d) scroll semantics: notches from value120/120, touchpad px accumulated with threshold, axis_stop resets (old `absolute/120.0` is ~0 for real wheels); mock sends both wheel and px forms; (e) NEW behavior (no legacy equivalent, accepted [ASSUMPTION]): wheel over workspaces focuses up/down, wheel over audio pill = volume ±5% — dry-run OSD only until the audio service exists, documented in README |
+| 1.14 | Pointer interaction pass (Amendment-3 findings a–e) | lme-ui/wayland+widgets, lme-shell/{bar,panels,daemon} | unit + e2e | done — (a) audio/network/battery are hover+click pills (control/wifi notices; network routes to the wifi panel like legacy); (b) launcher hover highlight + click-to-launch + wheel (one row per notch); (c) CenteredPanel outside-click dismiss + surface-coordinate fix (panel-local translation broke every click at the real centered offsets) + non-zero-offset regression tests; (d) value120 notches / touchpad px accumulation (50 px/line) / axis_stop reset — mock sends realistic wheel (120+53px) AND touchpad forms, e2e covers both; (e) NEW behavior documented in README: workspace wheel focus up/down, audio-pill wheel = ±5% dry-run volume OSD. Found + fixed D19 (launcher results were never populated on open/typing) |
 
 ## Tier 2 — control center and services
 

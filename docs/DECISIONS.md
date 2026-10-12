@@ -142,3 +142,18 @@ machines get these from dnf packages (README lists them), so the shim is NOT
 committed to the repo and NOT part of REBUILD_SPEC. A future sandbox restore
 must recreate it (env.sh degrades gracefully when absent, builds then require
 the real dev packages).
+
+## D19 — Launcher results were never populated (found by Step-0a pointer tests)
+Two latent TIER-1 bugs surfaced the moment a pointer could click a launcher
+row: (1) `open_launcher` never called `refresh_launcher`, so the panel opened
+with zero results until an unrelated niri/settings event fired while open —
+and the query-change `Slide` signal was ignored, so TYPING never re-ranked
+either; (2) the `golden_launcher` e2e had captured an empty pre-frame buffer
+via `--capture-commit 4` and passed vacuously against an essentially
+transparent golden, and the typing e2e asserted "panel stays open after
+Enter" on the (wrong) premise of zero results — masking bug (1). Fixes:
+populate on open + refresh on `Slide(LAUNCHER_INPUT)`; typing e2e now
+launches an injected app; the launcher golden uses a timed topmost capture
+with an anti-empty sanity check. Lesson recorded: a golden must prove its
+subject rendered, and an e2e assertion written to match observed behavior
+deserves suspicion when the behavior is "nothing happened".

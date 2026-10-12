@@ -48,20 +48,25 @@ fn find_bin(name: &str) -> PathBuf {
     path
 }
 
-fn write_isolated_config(tmp: &Path, animations: bool) {
+fn write_isolated_config(tmp: &Path, animations: bool, bar_right: Option<&[&str]>) {
     let dir = tmp.join("config/lme-shell");
     std::fs::create_dir_all(&dir).unwrap();
+    let mut settings = serde_json::json!({
+        "animations": animations,
+        "opacity": 0.90,
+        "accent": "#9580ff",
+        "barStyle": "connected",
+        "barFontSize": 13,
+        "barHeight": 42
+    });
+    if let Some(modules) = bar_right {
+        // isolate ONE right-zone module so pointer tests address it without
+        // depending on the widths of the other modules
+        settings["barLayout"] = serde_json::json!({ "right": modules });
+    }
     std::fs::write(
         dir.join("settings.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "animations": animations,
-            "opacity": 0.90,
-            "accent": "#9580ff",
-            "barStyle": "connected",
-            "barFontSize": 13,
-            "barHeight": 42
-        }))
-        .unwrap(),
+        serde_json::to_string_pretty(&settings).unwrap(),
     )
     .unwrap();
 }
@@ -91,16 +96,32 @@ fn fake_system_json() -> String {
     .unwrap()
 }
 
-/// Spawn compositor + daemon. `capture_commit`/`capture_out` capture one
-/// buffer; `key_events` is the mock's `--key-events` spec.
+/// Which committed buffer the mock captures: the Nth commit (any surface)
+/// or a timed snapshot of the topmost layer surface.
+enum Capture {
+    Commit(u64),
+    AtMs(u64),
+}
+
+/// A deterministic .desktop entry injected into the daemon's isolated
+/// XDG_DATA_HOME (tests that pass `apps` also blank XDG_DATA_DIRS so the
+/// system list cannot leak in).
+fn fake_desktop(name: &str) -> String {
+    format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\n")
+}
+
+/// Spawn compositor + daemon with the full option set (pointer injection,
+/// timed captures, isolated app list, single-module barLayout).
 #[allow(clippy::too_many_arguments)]
-fn spawn_harness(
+fn spawn_harness_full(
     name: &str,
     output_size: &str,
-    capture_commit: Option<u64>,
-    capture_out: Option<&Path>,
+    capture: Option<(Capture, &Path)>,
     key_events: Option<&str>,
+    pointer_events: Option<&str>,
     animations: bool,
+    bar_right: Option<&[&str]>,
+    apps: &[&str], // app NAMES; bodies are generated
 ) -> Harness {
     let unique = format!(
         "{}-{}-{}",
@@ -110,7 +131,19 @@ fn spawn_harness(
     );
     let tmp = std::env::temp_dir().join(&unique);
     std::fs::create_dir_all(tmp.join("runtime")).unwrap();
-    write_isolated_config(&tmp, animations);
+    write_isolated_config(&tmp, animations, bar_right);
+    let isolate_apps = !apps.is_empty();
+    if isolate_apps {
+        let apps_dir = tmp.join(".local/share/applications");
+        std::fs::create_dir_all(&apps_dir).unwrap();
+        for (i, app) in apps.iter().enumerate() {
+            std::fs::write(
+                apps_dir.join(format!("lme-test-{i}.desktop")),
+                fake_desktop(app),
+            )
+            .unwrap();
+        }
+    }
     let fake = tmp.join("fake-niri.json");
     std::fs::write(&fake, fake_state_json()).unwrap();
     let fake_system = tmp.join("fake-system.json");
@@ -130,14 +163,22 @@ fn spawn_harness(
         "--socket",
         &unique,
     ]);
-    if let (Some(n), Some(out)) = (capture_commit, capture_out) {
-        cmd.arg("--capture-commit")
-            .arg(n.to_string())
-            .arg("--capture-out")
-            .arg(out);
+    if let Some((cap, out)) = capture {
+        match cap {
+            Capture::Commit(n) => {
+                cmd.arg("--capture-commit").arg(n.to_string());
+            }
+            Capture::AtMs(ms) => {
+                cmd.arg("--capture-at").arg(ms.to_string());
+            }
+        }
+        cmd.arg("--capture-out").arg(out);
     }
     if let Some(keys) = key_events {
         cmd.arg("--key-events").arg(keys);
+    }
+    if let Some(pointer) = pointer_events {
+        cmd.arg("--pointer-events").arg(pointer);
     }
     cmd.env("XDG_RUNTIME_DIR", tmp.join("runtime"));
     // The mock compositor logs (slog) to STDOUT — pipe and tee it.
@@ -183,8 +224,12 @@ fn spawn_harness(
         .env("LME_SHELL_FAKE_STATE", &fake)
         .env("LME_SHELL_FAKE_STATE_SYSTEM", &fake_system)
         .env_remove("NIRI_SOCKET")
-        .env_remove("LME_SHELL_PERF")
-        .stdout(Stdio::null())
+        .env_remove("LME_SHELL_PERF");
+    if isolate_apps {
+        // only the injected .desktop files (see Applications::default_paths)
+        dcmd.env("XDG_DATA_DIRS", "");
+    }
+    dcmd.stdout(Stdio::null())
         .stderr(std::fs::File::create(tmp.join("shell.log")).unwrap());
     let mut daemon = dcmd.spawn().expect("spawn lme-shell daemon");
 
@@ -202,6 +247,30 @@ fn spawn_harness(
         compositor,
         log_path,
     }
+}
+
+/// Spawn compositor + daemon. `capture_commit`/`capture_out` capture one
+/// buffer; `key_events` is the mock's `--key-events` spec.
+#[allow(clippy::too_many_arguments)]
+fn spawn_harness(
+    name: &str,
+    output_size: &str,
+    capture_commit: Option<u64>,
+    capture_out: Option<&Path>,
+    key_events: Option<&str>,
+    animations: bool,
+) -> Harness {
+    let capture = capture_commit.map(|n| (Capture::Commit(n), capture_out.expect("capture path")));
+    spawn_harness_full(
+        name,
+        output_size,
+        capture,
+        key_events,
+        None,
+        animations,
+        None,
+        &[],
+    )
 }
 
 impl Harness {
@@ -397,37 +466,44 @@ fn power_menu_esc_closes() {
     );
 }
 
-/// Launcher: opens, accepts typed text, arrows move the selection, Enter
-/// activates (dry-run launch of a fake app) and Esc closes.
+/// Launcher: opens with a populated list, typed text filters it, arrows
+/// move the selection, Enter activates (launch of an injected fake app)
+/// and Esc closes.
 #[test]
 fn launcher_types_and_launches() {
-    let harness = spawn_harness(
+    let harness = spawn_harness_full(
         "launcher",
         "1280x800",
         None,
+        Some("b@1500,e@1600,t@1700,a@1800,enter@2600,esc@3600"),
         None,
-        Some("f@1500,i@1600,r@1700,e@1800,f@1900,o@2000,x@2100,enter@2600,esc@3600"),
         false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
     );
     std::thread::sleep(Duration::from_millis(900));
     harness.msg(&["toggle", "launcher"]);
-    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        harness.wait_log("created (lme-launcher)", Duration::from_secs(10)),
+        "launcher never opened"
+    );
     let status = harness.msg(&["status"]);
     assert!(status.contains("launcher"), "launcher open: {status}");
-    // keys typed f-i-r-e-f-o-x + Enter; the daemon has no Firefox desktop
-    // entry in the sandbox, so the launcher shows zero results and Enter is
-    // a no-op — the panel must stay open until Esc.
-    std::thread::sleep(Duration::from_millis(1600));
-    let status = harness.msg(&["status"]);
+    // keys type b-e-t-a + Enter: "Beta Pointer" is the only match, so
+    // Enter must LAUNCH it and close the panel (the old test relied on
+    // zero results masking the missing query refresh wiring)
     assert!(
-        status.contains("launcher"),
-        "launcher still open after Enter: {status}"
+        harness.wait_log("destroyed (lme-launcher)", Duration::from_secs(10)),
+        "Enter must launch the selected result and close the launcher"
     );
-    std::thread::sleep(Duration::from_millis(1400));
     let status = harness.msg(&["status"]);
     assert!(
         !status.contains("launcher"),
-        "launcher closed by Esc: {status}"
+        "launcher closed after launch: {status}"
+    );
+    assert!(
+        harness.msg(&["ping"]) == "pong",
+        "daemon alive after launch"
     );
 }
 
@@ -467,27 +543,302 @@ fn ipc_surface() {
     assert!(power.contains("dry-run"), "dry-run power: {power}");
 }
 
-/// Launcher opens with the app list; capture after the reveal settles.
+/// Launcher opens with the app list; timed topmost capture after the
+/// reveal settles. (The old --capture-commit version grabbed an empty
+/// pre-frame buffer and passed vacuously — Step-0a found that too.)
 #[test]
 fn golden_launcher() {
-    let png = capture_png("launcher", 4);
+    let png = capture_png("launcher", 0);
     let _ = std::fs::remove_file(&png);
-    let harness = spawn_harness(
+    let harness = spawn_harness_full(
         "launcher-golden",
         "1280x800",
-        Some(4),
-        Some(&png),
+        Some((Capture::AtMs(2500), &png)),
+        None,
         None,
         false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
     );
-    assert!(
-        harness.wait_log("MAPPED", Duration::from_secs(15)),
-        "bar never mapped"
-    );
+    std::thread::sleep(Duration::from_millis(800));
     harness.msg(&["toggle", "launcher"]);
     assert!(
         harness.wait_log("CAPTURED", Duration::from_secs(15)),
         "launcher capture never happened"
     );
+    // sanity: the panel is actually drawn this time (list rows present)
+    let image = decode_png(&png);
+    assert_eq!((image.width, image.height), (1280, 800));
+    let opaque = image
+        .rgba
+        .chunks(4)
+        .step_by(997)
+        .filter(|p| p[3] > 32)
+        .count();
+    assert!(
+        opaque > 40,
+        "launcher panel looks empty ({opaque} opaque samples)"
+    );
     assert_matches_golden(&png, "launcher.png");
+}
+
+// ---------------------------------------------------------------------------
+// Pointer interaction tests (Amendment 3 Step 0a: mock pointer injection)
+// ---------------------------------------------------------------------------
+//
+// Bar geometry in these tests (1280x800 output, barHeight 42, barEdgeMargin 8,
+// barSideMargin 12, bar font 13): the bar surface spans x 12..1268, y 8..50;
+// the leftmost launcher pill is centered near (54, 29) and, with barLayout
+// right=["audio"], the audio pill is the rightmost module near (1222, 29).
+// The launcher overlay covers the whole output; its 520x560 panel sits at
+// (380, 120) with result rows every 52 px starting at y 194.
+
+const BAR_LAUNCHER_PILL: (f64, f64) = (54.0, 29.0);
+const BAR_AUDIO_PILL: (f64, f64) = (1222.0, 29.0);
+const LAUNCHER_ROW0: (f64, f64) = (640.0, 220.0);
+const LAUNCHER_LIST: (f64, f64) = (640.0, 300.0);
+
+fn at(p: (f64, f64)) -> String {
+    format!("{},{}", p.0, p.1)
+}
+
+/// Clicking the launcher pill in the bar with a real pointer opens the
+/// launcher window (finding a wiring: bar buttons receive pointer events).
+#[test]
+fn pointer_click_opens_launcher() {
+    let spec = format!("motion:{}@1200;click@1300", at(BAR_LAUNCHER_PILL));
+    let harness = spawn_harness_full(
+        "ptr-launcher",
+        "1280x800",
+        None,
+        None,
+        Some(&spec),
+        false,
+        None,
+        &[],
+    );
+    assert!(
+        harness.wait_log("created (lme-launcher)", Duration::from_secs(10)),
+        "launcher window never mapped after the pointer click"
+    );
+    let status = harness.msg(&["status"]);
+    assert!(status.contains("launcher"), "launcher open: {status}");
+}
+
+/// Clicking a launcher result row launches it and closes the panel.
+#[test]
+fn launcher_row_click_launches_and_closes() {
+    let spec = format!("motion:{}@1500;click@1600", at(LAUNCHER_ROW0));
+    let harness = spawn_harness_full(
+        "ptr-rowclick",
+        "1280x800",
+        None,
+        None,
+        Some(&spec),
+        false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "launcher"]);
+    assert!(
+        harness.wait_log("created (lme-launcher)", Duration::from_secs(10)),
+        "launcher never opened"
+    );
+    assert!(
+        harness.wait_log("destroyed (lme-launcher)", Duration::from_secs(10)),
+        "launcher must close after clicking the first result row"
+    );
+    let status = harness.msg(&["status"]);
+    assert!(!status.contains("launcher"), "launcher closed: {status}");
+}
+
+/// A click on the dimmed backdrop (outside the panel) dismisses the panel
+/// (finding c).
+#[test]
+fn outside_click_dismisses_launcher() {
+    let harness = spawn_harness_full(
+        "ptr-dismiss",
+        "1280x800",
+        None,
+        None,
+        Some("motion:5,5@1500;click@1600"),
+        false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "launcher"]);
+    assert!(
+        harness.wait_log("created (lme-launcher)", Duration::from_secs(10)),
+        "launcher never opened"
+    );
+    assert!(
+        harness.wait_log("destroyed (lme-launcher)", Duration::from_secs(10)),
+        "outside click must dismiss the launcher"
+    );
+    let status = harness.msg(&["status"]);
+    assert!(!status.contains("launcher"), "launcher closed: {status}");
+}
+
+/// One wheel notch (value120 path) moves the launcher selection down a row
+/// (finding b + d); the pointer leaves before the capture so no hover row
+/// is drawn.
+#[test]
+fn golden_launcher_wheel_notch() {
+    let png = capture_png("launcher-wheel", 0);
+    let _ = std::fs::remove_file(&png);
+    let spec = format!(
+        "motion:{}@1500;scroll:0,1@1600;leave@1700",
+        at(LAUNCHER_LIST)
+    );
+    let harness = spawn_harness_full(
+        "ptr-wheel",
+        "1280x800",
+        Some((Capture::AtMs(2500), &png)),
+        None,
+        Some(&spec),
+        false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "launcher"]);
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "timed capture never happened"
+    );
+    assert_matches_golden(&png, "launcher-wheel-row1.png");
+}
+
+/// Touchpad-style pixel deltas accumulate to the same one-line scroll
+/// (finding d: plain-axis path, no value120).
+#[test]
+fn golden_launcher_touchpad_scroll() {
+    let png = capture_png("launcher-tpad", 0);
+    let _ = std::fs::remove_file(&png);
+    let spec = format!(
+        "motion:{0}@1400;scrollpx:0,20@1500;scrollpx:0,20@1550;scrollpx:0,20@1600;leave@1700",
+        at(LAUNCHER_LIST)
+    );
+    let harness = spawn_harness_full(
+        "ptr-tpad",
+        "1280x800",
+        Some((Capture::AtMs(2500), &png)),
+        None,
+        Some(&spec),
+        false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "launcher"]);
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "timed capture never happened"
+    );
+    // 60 px = one 50 px line + remainder: same state as the wheel notch
+    assert_matches_golden(&png, "launcher-wheel-row1.png");
+}
+
+/// axis_stop discards the sub-threshold remainder: 20 px + stop + 20 px +
+/// stop never scrolls (finding d).
+#[test]
+fn golden_launcher_scroll_stop_resets() {
+    let png = capture_png("launcher-stop", 0);
+    let _ = std::fs::remove_file(&png);
+    let spec = format!(
+        "motion:{0}@1400;scrollpx:0,20@1500;scrollstop@1550;scrollpx:0,20@1600;scrollstop@1650;leave@1700",
+        at(LAUNCHER_LIST)
+    );
+    let harness = spawn_harness_full(
+        "ptr-stop",
+        "1280x800",
+        Some((Capture::AtMs(2500), &png)),
+        None,
+        Some(&spec),
+        false,
+        None,
+        &["Alpha Pointer", "Beta Pointer", "Gamma Pointer"],
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    harness.msg(&["toggle", "launcher"]);
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "timed capture never happened"
+    );
+    // selection stayed on row 0 and the pointer left: the panel looks
+    // exactly like a freshly-opened launcher with these three apps
+    assert_matches_golden(&png, "launcher-unscrolled.png");
+}
+
+/// Wheel over the audio pill previews volume +5%/notch as a dry-run OSD
+/// (finding e).
+#[test]
+fn golden_wheel_over_audio_pill() {
+    let png = capture_png("osd-wheel", 0);
+    let _ = std::fs::remove_file(&png);
+    let spec = format!("motion:{}@1200;scroll:0,1@1300", at(BAR_AUDIO_PILL));
+    let harness = spawn_harness_full(
+        "ptr-volwheel",
+        "1280x800",
+        Some((Capture::AtMs(2200), &png)),
+        None,
+        Some(&spec),
+        false,
+        Some(&["audio"]),
+        &[],
+    );
+    assert!(
+        harness.wait_log("created (lme-osd)", Duration::from_secs(10)),
+        "volume wheel must show the OSD"
+    );
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "timed capture never happened"
+    );
+    let image = decode_png(&png);
+    assert!(
+        (image.width, image.height) == (240, 64),
+        "topmost surface must be the value OSD, got {}x{}",
+        image.width,
+        image.height
+    );
+    // fake system state says volume 64 -> one notch up previews 69
+    assert_matches_golden(&png, "osd-volume-wheel.png");
+}
+
+/// Clicking the audio pill answers with the control-center notice (finding a:
+/// status modules are real buttons; panels arrive in Tier 2).
+#[test]
+fn click_audio_pill_shows_control_notice() {
+    let png = capture_png("osd-notice", 0);
+    let _ = std::fs::remove_file(&png);
+    let spec = format!("motion:{}@1200;click@1300", at(BAR_AUDIO_PILL));
+    let harness = spawn_harness_full(
+        "ptr-audio",
+        "1280x800",
+        Some((Capture::AtMs(2200), &png)),
+        None,
+        Some(&spec),
+        false,
+        Some(&["audio"]),
+        &[],
+    );
+    assert!(
+        harness.wait_log("created (lme-osd)", Duration::from_secs(10)),
+        "audio pill click must show the control notice"
+    );
+    assert!(
+        harness.wait_log("CAPTURED", Duration::from_secs(15)),
+        "timed capture never happened"
+    );
+    let image = decode_png(&png);
+    assert!(
+        (image.width, image.height) == (460, 76),
+        "topmost surface must be the notice OSD, got {}x{}",
+        image.width,
+        image.height
+    );
+    assert_matches_golden(&png, "osd-control-notice.png");
 }
