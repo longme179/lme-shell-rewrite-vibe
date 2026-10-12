@@ -9,7 +9,7 @@ documents remain as history.
 
 ## Current step
 
-**Session 2026-10-13 (tray Tier 1.11 DONE).** Sandbox
+**Session 2026-10-13 (Tier 1 COMPLETE: 1.11 tray + 1.2 MPRIS/resources).** Sandbox
 survived between chats; branch was at 99bda82 with the Step-0a mock-pointer
 edits half-applied (a multi-edit died mid-way: State/dispatch edits landed,
 main() had not). Per Amendment 3: gh-sync ran FIRST (pushed 99bda82 +
@@ -91,6 +91,25 @@ missing=17 external=2 (docs/NATIVE_PLAN.md is the live table).
      dbusmenu prop parsed as empty).
    - pixmap decode: clamp channels to alpha instead of dropping icons
      with invalid non-premultiplied data.
+
+**Session 2026-10-13 additions (media + resources → Tier 1 complete):**
+
+9. **Tier 1.2 remainder DONE** (commit 8359776): mpris.rs (ListNames scan
+   + NameOwnerChanged, per-player snapshots, PropertiesChanged refresh,
+   gone-on-owner-loss; D20 thread pattern; non-fatal without a bus) →
+   bar media pill (playing || first, trackTitle || identity) + `msg
+   media`; system chain now merges /proc CPU%+RAM% (SystemProbes deltas)
+   with the sysfs battery into the 5 s chained one-shot. e2e
+   `mpris_media_module` with a REAL player (examples/fake_mpris, the
+   legacy mpris_fixture.py port): track → golden bar pill → busctl Next →
+   PropertiesChanged refresh → kill → removal. Suite 19 → 20 e2e.
+10. **D24 found + fixed** (commit 8359776): zbus receive_all_signals
+    filters on the proxy's interface — PropertiesChanged never reached
+    the MPRIS listener (dead refresh path) nor the tray item listener
+    (latent: only New* worked). Both now subscribe on a Properties proxy
+    at the same dest/path. Caught by the busctl-driven Next call.
+11. **Tier 1 is COMPLETE** (1.1–1.14). Remaining pre-Tier-2: 0.9
+    fractional-scale.
 
 1. Docs: ADR 0002, NATIVE_PLAN (full coverage table), DECISIONS D1–D17.
 2. Restructure: legacy/ isolation (qml, python, lifecycle scripts, tests,
